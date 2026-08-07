@@ -15,8 +15,9 @@ Then open **`viewer.html`**, click **Load archive**, and choose the generated JS
 - Fixes the pagination bug that discarded the **final page** of conversations and messages;
 - Validates the Roblox session before starting;
 - Handles 401/403/429/5xx responses, timeouts, malformed responses and retries instead of simply crashing;
-- Paces requests to stay around Roblox's tighter 2026 cookie-API rate limits;
+- Paces requests to reduce the chance of hitting Roblox's cookie-API rate limits;
 - Continues past deleted/unresolvable users and most individual conversation errors;
+- Preserves conversation metadata even when Roblox returns no accessible messages or one conversation's message request fails;
 - Never writes the `.ROBLOSECURITY` cookie to the archive or diagnostic file;
 - Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);
 - Replaces the old CDN-based viewer with a fully local viewer and renders archive text with `textContent`.
@@ -25,9 +26,13 @@ Then open **`viewer.html`**, click **Load archive**, and choose the generated JS
 
 `.ROBLOSECURITY` is an active Roblox login credential. Do **not** paste it into chats, websites, Discord, GitHub issues, or anywhere else. The included archivers use it only for HTTPS requests to Roblox API hosts and do not save it in the output JSON.
 
+The generated archive itself can contain private chat history in plaintext. Treat archive JSON files as sensitive and do not upload or share them unless you intend to share their contents.
+
 ## Diagnostics
 
 If the archiver fails, it creates `archiver-error.txt`. The diagnostic output is designed not to include the cookie value.
+
+The archive also records metadata-only conversations and message-fetch failures under `archiveMeta`, so a conversation does not silently disappear just because Roblox returned no accessible messages.
 
 ## API limitation
 

@@ -9,25 +9,22 @@ from __future__ import annotations
 
 import datetime as _dt
 import getpass
+from http.cookiejar import Cookie, CookieJar
 import json
 import os
 from pathlib import Path
-import sys
 import time
 import traceback
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, build_opener, HTTPCookieProcessor
-from http.cookiejar import Cookie, CookieJar
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
-APP_NAME = "Roblox Web Chat Archiver (2026 refresh v5)"
+APP_NAME = "Roblox Web Chat Archiver (2026 refresh)"
 CHAT_BASE = "https://apis.roblox.com/platform-chat-api/v1"
 USERS_BASE = "https://users.roblox.com/v1"
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 6
-# Roblox tightened cookie-authenticated Web API rate limits in 2026. Keeping
-# requests below ~120/min makes large archives much less likely to hit 429s.
 MIN_REQUEST_INTERVAL = 0.52
 
 _last_request_at = 0.0
@@ -45,20 +42,12 @@ class AuthenticationError(ArchiverError):
 
 def _normalize_cookie(value: str) -> str:
     value = value.strip().strip('"').strip("'")
-
-    # Allow pasting either the raw value or a full cookie assignment copied from
-    # a cookie editor, e.g. `.ROBLOSECURITY=...`.
     if value.lower().startswith(".roblosecurity="):
         value = value.split("=", 1)[1].strip()
-
-    # If the user pasted a Cookie header with more fields, keep only the value
-    # before the first semicolon.
     if ";" in value:
         value = value.split(";", 1)[0].strip()
-
     if not value:
         raise AuthenticationError("No .ROBLOSECURITY value was entered.")
-
     return value
 
 
@@ -75,18 +64,15 @@ def _error_message(payload: Any) -> str:
                 else:
                     parts.append(str(item))
             return "; ".join(parts)
-
         for key in ("message", "Message", "error", "Error"):
             if payload.get(key):
                 return str(payload[key])
-
     return str(payload)[:400]
 
 
 def _sleep_for_rate_limit() -> None:
     global _last_request_at
-    now = time.monotonic()
-    delay = MIN_REQUEST_INTERVAL - (now - _last_request_at)
+    delay = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
     if delay > 0:
         time.sleep(delay)
 
@@ -95,10 +81,23 @@ def _init_session(cookie: str) -> None:
     global _opener
     jar = CookieJar()
     jar.set_cookie(Cookie(
-        version=0, name=".ROBLOSECURITY", value=cookie, port=None, port_specified=False,
-        domain=".roblox.com", domain_specified=True, domain_initial_dot=True,
-        path="/", path_specified=True, secure=True, expires=None, discard=True,
-        comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
+        version=0,
+        name=".ROBLOSECURITY",
+        value=cookie,
+        port=None,
+        port_specified=False,
+        domain=".roblox.com",
+        domain_specified=True,
+        domain_initial_dot=True,
+        path="/",
+        path_specified=True,
+        secure=True,
+        expires=None,
+        discard=True,
+        comment=None,
+        comment_url=None,
+        rest={"HttpOnly": None},
+        rfc2109=False,
     ))
     _opener = build_opener(HTTPCookieProcessor(jar))
 
@@ -113,16 +112,20 @@ def _open(req: Request):
 
 
 def refresh_session() -> None:
-    """Force Roblox to rotate/update .ROBLOSECURITY and keep Set-Cookie in the jar."""
+    """Ask Roblox to rotate/update .ROBLOSECURITY and retain Set-Cookie in the jar."""
     global _csrf_token
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Origin": "https://www.roblox.com",
         "Referer": "https://www.roblox.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        ),
     }
     if _csrf_token:
         headers["X-CSRF-TOKEN"] = _csrf_token
+
     req = Request("https://auth.roblox.com/v1/session/refresh", headers=headers, data=b"", method="POST")
     try:
         with _open(req):
@@ -153,10 +156,8 @@ def refresh_session() -> None:
         return
 
 
-def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) -> Any:
-    """GET JSON using a real cookie jar so 2026 Set-Cookie rotations are retained."""
-    global _last_request_at
-
+def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
+    """GET JSON through the authenticated cookie session."""
     if params:
         clean_params = {k: v for k, v in params.items() if v is not None and v != ""}
         if clean_params:
@@ -168,17 +169,14 @@ def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) ->
         "Referer": "https://www.roblox.com/",
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/151.0.0.0 Safari/537.36"
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
         ),
     }
-
     last_error: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
-        req = Request(url, headers=headers, method="GET")
         try:
-            with _open(req) as resp:
+            with _open(Request(url, headers=headers, method="GET")) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 if not raw.strip():
                     return {}
@@ -189,7 +187,6 @@ def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) ->
                         f"Roblox returned a non-JSON response from {url}. "
                         f"Response started with: {raw[:160]!r}"
                     ) from exc
-
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             try:
@@ -209,13 +206,11 @@ def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) ->
                     "Roblox rejected the login session (HTTP 401). The browser cookie may have "
                     "rotated since it was copied. Copy the CURRENT .ROBLOSECURITY value and retry."
                 ) from exc
-
             if exc.code == 403:
                 raise AuthenticationError(
                     f"Roblox refused the authenticated request (HTTP 403). Roblox said: {detail}"
                 ) from exc
-
-            if exc.code == 429:
+            if exc.code == 429 and attempt < MAX_RETRIES:
                 retry_after = exc.headers.get("Retry-After")
                 try:
                     wait = max(2.0, float(retry_after)) if retry_after else min(30.0, 2 ** attempt)
@@ -225,16 +220,13 @@ def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) ->
                 time.sleep(wait)
                 last_error = exc
                 continue
-
             if 500 <= exc.code <= 599 and attempt < MAX_RETRIES:
                 wait = min(20.0, 2 ** (attempt - 1))
                 print(f"\nRoblox API returned HTTP {exc.code}; retrying in {wait:g}s...", flush=True)
                 time.sleep(wait)
                 last_error = exc
                 continue
-
             raise ArchiverError(f"Roblox API error HTTP {exc.code}: {detail} ({url})") from exc
-
         except (URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt >= MAX_RETRIES:
@@ -245,8 +237,8 @@ def request_json(cookie: str, url: str, params: dict[str, Any] | None = None) ->
 
     raise ArchiverError(f"Could not reach Roblox after {MAX_RETRIES} attempts: {last_error}")
 
+
 def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
-    """Request a Roblox endpoint that does not require the account cookie."""
     headers = {
         "Accept": "application/json, text/plain, */*",
         "User-Agent": "RobloxWebChatArchiver/2026",
@@ -259,9 +251,8 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
     opener = build_opener()
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
-        req = Request(url, headers=headers, data=data, method=method)
         try:
-            with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
+            with opener.open(Request(url, headers=headers, data=data, method=method), timeout=REQUEST_TIMEOUT) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw.strip() else {}
         except HTTPError as exc:
@@ -284,65 +275,6 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
                 break
             time.sleep(min(10.0, 2 ** (attempt - 1)))
     raise ArchiverError(f"Could not reach Roblox public API after {MAX_RETRIES} attempts: {last_error}")
-
-
-def resolve_users_batch(user_ids: Iterable[int]) -> dict[str, dict[str, Any]]:
-    """Resolve many Roblox user IDs with the public batch endpoint."""
-    unique = sorted({int(uid) for uid in user_ids if int(uid) != 0})
-    people: dict[str, dict[str, Any]] = {}
-    batch_size = 100
-
-    for start in range(0, len(unique), batch_size):
-        batch = unique[start:start + batch_size]
-        print(f"  resolving users {start + 1}-{start + len(batch)} of {len(unique)}", flush=True)
-        try:
-            payload = request_public_json(
-                f"{USERS_BASE}/users",
-                method="POST",
-                body={"userIds": batch, "excludeBannedUsers": False},
-            )
-            items = _first_list(payload, "data", "users", "items")
-            for user in items:
-                if not isinstance(user, dict):
-                    continue
-                try:
-                    uid = int(user.get("id") or user.get("userId") or user.get("targetId"))
-                except (TypeError, ValueError):
-                    continue
-                if not uid:
-                    continue
-                name = str(user.get("name") or f"Unknown user {uid}")
-                people[str(uid)] = {
-                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)),
-                    "name": name,
-                    "displayName": str(user.get("displayName") or name),
-                    "targetId": uid,
-                }
-        except ArchiverError as exc:
-            print(f"  Batch user lookup failed; falling back for this batch. ({exc})", flush=True)
-
-        # Missing users (for example deleted accounts) are retried individually.
-        for uid in batch:
-            if str(uid) in people:
-                continue
-            try:
-                user = request_public_json(f"{USERS_BASE}/users/{uid}")
-                name = str(user.get("name") or f"Unknown user {uid}") if isinstance(user, dict) else f"Unknown user {uid}"
-                people[str(uid)] = {
-                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)) if isinstance(user, dict) else False,
-                    "name": name,
-                    "displayName": str(user.get("displayName") or name) if isinstance(user, dict) else name,
-                    "targetId": uid,
-                }
-            except ArchiverError as exc:
-                people[str(uid)] = {
-                    "hasVerifiedBadge": False,
-                    "name": f"Unknown user {uid}",
-                    "displayName": f"Unknown user {uid}",
-                    "targetId": uid,
-                    "_lookupError": str(exc),
-                }
-    return people
 
 
 def _nested_dicts(data: Any) -> Iterable[dict[str, Any]]:
@@ -380,11 +312,7 @@ def _conversation_id(convo: dict[str, Any]) -> str | None:
 
 
 def _message_sender_id(message: dict[str, Any]) -> int | None:
-    value = (
-        message.get("sender_user_id")
-        or message.get("senderUserId")
-        or message.get("senderTargetId")
-    )
+    value = message.get("sender_user_id") or message.get("senderUserId") or message.get("senderTargetId")
     if value is None and isinstance(message.get("sender"), dict):
         value = message["sender"].get("id") or message["sender"].get("userId")
     try:
@@ -403,16 +331,10 @@ def _message_content(message: dict[str, Any]) -> str:
 
 
 def _message_time(message: dict[str, Any]) -> str:
-    value = (
-        message.get("created_at")
-        or message.get("createdAt")
-        or message.get("sent")
-        or message.get("timestamp")
-    )
+    value = message.get("created_at") or message.get("createdAt") or message.get("sent") or message.get("timestamp")
     if value is None:
         return ""
     if isinstance(value, (int, float)):
-        # Handle seconds or milliseconds.
         seconds = value / 1000 if value > 10_000_000_000 else value
         try:
             return _dt.datetime.fromtimestamp(seconds, tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -421,79 +343,11 @@ def _message_time(message: dict[str, Any]) -> str:
     return str(value)
 
 
-def fetch_all_conversations(cookie: str) -> dict[str, dict[str, Any]]:
-    conversations: dict[str, dict[str, Any]] = {}
-    cursor: str | None = None
-    seen_cursors: set[str] = set()
-    page = 0
-
-    while True:
-        page += 1
-        data = request_json(cookie, f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor})
-        items = _first_list(data, "conversations", "Conversations", "items")
-
-        # IMPORTANT: process the current page BEFORE deciding whether there is a
-        # next cursor. The original 2025 script did this in the opposite order,
-        # silently dropping the final page (and all data when only one page existed).
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            cid = _conversation_id(item)
-            if cid:
-                conversations[cid] = item
-
-        print(f"  conversations page {page}: +{len(items)} (total {len(conversations)})", flush=True)
-
-        next_cursor = _next_cursor(data)
-        if not next_cursor:
-            break
-        if next_cursor in seen_cursors:
-            raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
-        seen_cursors.add(next_cursor)
-        cursor = next_cursor
-
-    return conversations
-
-
-def fetch_all_messages(cookie: str, conversation_id: str) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    cursor: str | None = None
-    seen_cursors: set[str] = set()
-
-    while True:
-        data = request_json(
-            cookie,
-            f"{CHAT_BASE}/get-conversation-messages",
-            {"conversation_id": conversation_id, "cursor": cursor},
-        )
-        items = _first_list(data, "messages", "Messages", "items")
-        messages.extend(item for item in items if isinstance(item, dict))
-
-        next_cursor = _next_cursor(data)
-        if not next_cursor:
-            break
-        if next_cursor in seen_cursors:
-            raise ArchiverError(
-                f"Roblox returned the same message cursor twice for conversation {conversation_id}; "
-                "stopping that conversation to avoid an infinite loop."
-            )
-        seen_cursors.add(next_cursor)
-        cursor = next_cursor
-
-    return messages
-
-
 def _participant_ids(convo: dict[str, Any]) -> list[int]:
-    raw = (
-        convo.get("participant_user_ids")
-        or convo.get("participantUserIds")
-        or convo.get("participants")
-        or []
-    )
-    result: list[int] = []
+    raw = convo.get("participant_user_ids") or convo.get("participantUserIds") or convo.get("participants") or []
     if not isinstance(raw, list):
-        return result
-
+        return []
+    result: list[int] = []
     for item in raw:
         if isinstance(item, dict):
             item = item.get("id") or item.get("userId") or item.get("targetId")
@@ -516,40 +370,132 @@ def _created_by(convo: dict[str, Any]) -> int | None:
         return None
 
 
-def fetch_user(cookie: str, user_id: int) -> dict[str, Any]:
-    try:
-        data = request_json(cookie, f"{USERS_BASE}/users/{user_id}")
-    except ArchiverError as exc:
-        # Deleted/moderated accounts shouldn't ruin an otherwise complete archive.
-        return {
-            "hasVerifiedBadge": False,
-            "name": f"Unknown user {user_id}",
-            "displayName": f"Unknown user {user_id}",
-            "targetId": user_id,
-            "_lookupError": str(exc),
-        }
+def fetch_all_conversations() -> dict[str, dict[str, Any]]:
+    conversations: dict[str, dict[str, Any]] = {}
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    page = 0
 
-    return {
-        "hasVerifiedBadge": bool(data.get("hasVerifiedBadge", False)) if isinstance(data, dict) else False,
-        "name": str(data.get("name") or f"Unknown user {user_id}") if isinstance(data, dict) else f"Unknown user {user_id}",
-        "displayName": str(data.get("displayName") or data.get("name") or f"Unknown user {user_id}") if isinstance(data, dict) else f"Unknown user {user_id}",
-        "targetId": user_id,
-    }
+    while True:
+        page += 1
+        data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor})
+        items = _first_list(data, "conversations", "Conversations", "items")
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cid = _conversation_id(item)
+            if cid:
+                conversations[cid] = item
+        print(f"  conversations page {page}: +{len(items)} (total {len(conversations)})", flush=True)
+
+        next_cursor = _next_cursor(data)
+        if not next_cursor:
+            break
+        if next_cursor in seen_cursors:
+            raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    return conversations
 
 
-def normalize_conversation(raw: dict[str, Any], cid: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+
+    while True:
+        data = request_json(
+            f"{CHAT_BASE}/get-conversation-messages",
+            {"conversation_id": conversation_id, "cursor": cursor},
+        )
+        items = _first_list(data, "messages", "Messages", "items")
+        messages.extend(item for item in items if isinstance(item, dict))
+
+        next_cursor = _next_cursor(data)
+        if not next_cursor:
+            break
+        if next_cursor in seen_cursors:
+            raise ArchiverError(
+                f"Roblox returned the same message cursor twice for conversation {conversation_id}; "
+                "stopping that conversation to avoid an infinite loop."
+            )
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    return messages
+
+
+def resolve_users_batch(user_ids: Iterable[int]) -> dict[str, dict[str, Any]]:
+    unique = sorted({int(uid) for uid in user_ids if int(uid) != 0})
+    people: dict[str, dict[str, Any]] = {}
+
+    for start in range(0, len(unique), 100):
+        batch = unique[start:start + 100]
+        print(f"  resolving users {start + 1}-{start + len(batch)} of {len(unique)}", flush=True)
+        try:
+            payload = request_public_json(
+                f"{USERS_BASE}/users",
+                method="POST",
+                body={"userIds": batch, "excludeBannedUsers": False},
+            )
+            for user in _first_list(payload, "data", "users", "items"):
+                if not isinstance(user, dict):
+                    continue
+                try:
+                    uid = int(user.get("id") or user.get("userId") or user.get("targetId"))
+                except (TypeError, ValueError):
+                    continue
+                if not uid:
+                    continue
+                name = str(user.get("name") or f"Unknown user {uid}")
+                people[str(uid)] = {
+                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)),
+                    "name": name,
+                    "displayName": str(user.get("displayName") or name),
+                    "targetId": uid,
+                }
+        except ArchiverError as exc:
+            print(f"  Batch user lookup failed; falling back for this batch. ({exc})", flush=True)
+
+        for uid in batch:
+            if str(uid) in people:
+                continue
+            try:
+                user = request_public_json(f"{USERS_BASE}/users/{uid}")
+                name = str(user.get("name") or f"Unknown user {uid}") if isinstance(user, dict) else f"Unknown user {uid}"
+                people[str(uid)] = {
+                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)) if isinstance(user, dict) else False,
+                    "name": name,
+                    "displayName": str(user.get("displayName") or name) if isinstance(user, dict) else name,
+                    "targetId": uid,
+                }
+            except ArchiverError as exc:
+                people[str(uid)] = {
+                    "hasVerifiedBadge": False,
+                    "name": f"Unknown user {uid}",
+                    "displayName": f"Unknown user {uid}",
+                    "targetId": uid,
+                    "_lookupError": str(exc),
+                }
+    return people
+
+
+def normalize_conversation(
+    raw: dict[str, Any],
+    cid: str,
+    messages: list[dict[str, Any]],
+    archive_status: str | None = None,
+    archive_error: str | None = None,
+) -> dict[str, Any]:
     title = raw.get("name") or raw.get("title") or raw.get("displayName") or f"Conversation {cid}"
     normalized_messages = []
-
     for raw_message in messages:
         sender_id = _message_sender_id(raw_message) or 0
         normalized = dict(raw_message)
         normalized["senderTargetId"] = sender_id
         normalized["sent"] = _message_time(raw_message)
         normalized["content"] = _message_content(raw_message)
-
-        # Remove duplicate/new-schema names so archives stay close to the format
-        # the original viewer expected.
         for key in ("sender_user_id", "senderUserId", "created_at", "createdAt"):
             normalized.pop(key, None)
         normalized_messages.append(normalized)
@@ -559,15 +505,25 @@ def normalize_conversation(raw: dict[str, Any], cid: str, messages: list[dict[st
     normalized_convo["title"] = str(title)
     normalized_convo["messages"] = normalized_messages
     normalized_convo.pop("name", None)
+    if archive_status:
+        normalized_convo["_archiveStatus"] = archive_status
+    if archive_error:
+        normalized_convo["_archiveError"] = archive_error
     return normalized_convo
 
 
-def write_archive(output_dir: Path, current_user: dict[str, Any], people: dict[str, dict[str, Any]], conversations: dict[str, dict[str, Any]], failures: list[dict[str, str]]) -> Path:
+def write_archive(
+    output_dir: Path,
+    current_user: dict[str, Any],
+    people: dict[str, dict[str, Any]],
+    conversations: dict[str, dict[str, Any]],
+    failures: list[dict[str, str]],
+) -> Path:
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = "".join(c for c in str(current_user.get("name", "user")) if c.isalnum() or c in "-_ ").strip() or "user"
-    filename = f"roblox-chat-archive-{current_user['id']}-{safe_name}-{stamp}.json"
-    path = output_dir / filename
+    path = output_dir / f"roblox-chat-archive-{current_user['id']}-{safe_name}-{stamp}.json"
 
+    metadata_only = sum(1 for convo in conversations.values() if not convo.get("messages"))
     payload = {
         "userId": current_user["id"],
         "people": people,
@@ -575,6 +531,8 @@ def write_archive(output_dir: Path, current_user: dict[str, Any], people: dict[s
         "archiveMeta": {
             "createdAt": _dt.datetime.now(tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
             "archiver": APP_NAME,
+            "conversationCount": len(conversations),
+            "metadataOnlyConversations": metadata_only,
             "failedConversations": failures,
         },
     }
@@ -601,25 +559,25 @@ def main() -> int:
         print("Using .ROBLOSECURITY from the ROBLOSECURITY environment variable.")
     else:
         try:
-            entered = getpass.getpass("Paste your .ROBLOSECURITY value (hidden): ")
-        except Exception:
-            entered = input("Paste your .ROBLOSECURITY value: ")
-        cookie = _normalize_cookie(entered)
+            cookie = _normalize_cookie(getpass.getpass("Paste your .ROBLOSECURITY value (hidden): "))
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            raise ArchiverError("Could not open a hidden credential prompt in this terminal.") from exc
 
     _init_session(cookie)
-    # The cookie jar owns the session from here on. Clear the plain local copy;
-    # request_json's legacy cookie parameter is intentionally unused.
     cookie = ""
+
     print("\nPreparing 2026 Roblox session...", flush=True)
     refresh_session()
     print("Checking Roblox login...", flush=True)
-    current_user = request_json(cookie, f"{USERS_BASE}/users/authenticated")
+    current_user = request_json(f"{USERS_BASE}/users/authenticated")
     if not isinstance(current_user, dict) or not current_user.get("id"):
         raise AuthenticationError(f"Roblox did not return a valid authenticated user: {_error_message(current_user)}")
 
     print(f"Logged in as {current_user.get('name', 'Unknown')} (ID {current_user['id']}).")
     print("\nFetching conversations...", flush=True)
-    raw_conversations = fetch_all_conversations(cookie)
+    raw_conversations = fetch_all_conversations()
     print(f"Found {len(raw_conversations)} conversations.\n")
 
     normalized_conversations: dict[str, dict[str, Any]] = {}
@@ -631,26 +589,28 @@ def main() -> int:
         title = raw_convo.get("name") or raw_convo.get("title") or cid
         print(f"[{index}/{total}] Fetching {title!s}...", end=" ", flush=True)
 
-        try:
-            messages = fetch_all_messages(cookie, cid)
-        except AuthenticationError:
-            raise
-        except ArchiverError as exc:
-            failures.append({"conversationId": cid, "title": str(title), "error": str(exc)})
-            print(f"FAILED ({exc})")
-            continue
-
-        if not messages:
-            print("0 messages; skipped")
-            continue
-
-        normalized = normalize_conversation(raw_convo, cid, messages)
-        normalized_conversations[cid] = normalized
-
         creator = _created_by(raw_convo)
         if creator:
             unknown_ids.add(creator)
         unknown_ids.update(_participant_ids(raw_convo))
+
+        try:
+            messages = fetch_all_messages(cid)
+        except AuthenticationError:
+            raise
+        except ArchiverError as exc:
+            error = str(exc)
+            failures.append({"conversationId": cid, "title": str(title), "error": error})
+            normalized_conversations[cid] = normalize_conversation(
+                raw_convo, cid, [], archive_status="metadata-only-error", archive_error=error
+            )
+            print(f"FAILED; metadata saved ({error})")
+            continue
+
+        status = "metadata-only-empty-response" if not messages else None
+        normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status)
+        normalized_conversations[cid] = normalized
+
         for message in normalized["messages"]:
             try:
                 sender_id = int(message.get("senderTargetId", 0))
@@ -659,12 +619,14 @@ def main() -> int:
             if sender_id:
                 unknown_ids.add(sender_id)
 
-        print(f"{len(messages)} messages")
+        if messages:
+            print(f"{len(messages)} messages")
+        else:
+            print("0 messages; metadata saved")
 
     print(f"\nResolving {len(unknown_ids)} users in batches...", flush=True)
     people = resolve_users_batch(unknown_ids)
 
-    # Always overwrite the authenticated user with the already-validated auth response.
     current_id = int(current_user["id"])
     people[str(current_id)] = {
         "hasVerifiedBadge": bool(current_user.get("hasVerifiedBadge", False)),
@@ -672,7 +634,6 @@ def main() -> int:
         "displayName": str(current_user.get("displayName") or current_user.get("name") or current_id),
         "targetId": current_id,
     }
-
     people["0"] = {
         "hasVerifiedBadge": False,
         "name": "Roblox",
@@ -680,16 +641,18 @@ def main() -> int:
         "targetId": 0,
     }
 
-    output_dir = Path.cwd()
-    archive_path = write_archive(output_dir, current_user, people, normalized_conversations, failures)
-
+    archive_path = write_archive(Path.cwd(), current_user, people, normalized_conversations, failures)
     total_messages = sum(len(c.get("messages", [])) for c in normalized_conversations.values())
+    metadata_only = sum(1 for c in normalized_conversations.values() if not c.get("messages"))
+
     print("\nDone.")
     print(f"Saved: {archive_path}")
     print(f"Archived conversations: {len(normalized_conversations)}")
     print(f"Archived messages: {total_messages}")
+    if metadata_only:
+        print(f"Metadata-only conversations: {metadata_only}")
     if failures:
-        print(f"WARNING: {len(failures)} conversation(s) failed. Details are stored in archiveMeta.failedConversations.")
+        print(f"WARNING: {len(failures)} conversation(s) had message-fetch errors; their metadata was still saved.")
 
     return 0
 
