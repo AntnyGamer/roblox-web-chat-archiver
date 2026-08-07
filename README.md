@@ -1,14 +1,34 @@
-# Roblox web chat archiver
+# Roblox web chat archiver — 2026 compatibility refresh
 
-> [!NOTE]  
-> The archiver app will likely stop working at some point, and I won't fix it when it does. The viewer will always work though, so keep it alongside your chat archives if you have any.
+This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
-This is for if you want to preserve your old Roblox website chat messages with friends in case you either lose access to your account or want to remove them from your friend list.
+2026 authentication note: Roblox changed `.ROBLOSECURITY` rotation behavior in May 2026. This refresh uses a real cookie session, accepts Roblox `Set-Cookie` rotations, and calls Roblox's session refresh endpoint before archiving. If Roblox still returns HTTP 401, re-copy the CURRENT `.ROBLOSECURITY` value from the logged-in Roblox tab and run it again; an already-invalid session cannot be recovered by the archiver.
 
-It's what I made this for, as I wanted to preserve my old chat histories while also wanting to clean up my friend list, as you lose access to your chat history with someone when you unfriend them.
+## Windows: easiest way
 
-To archive your chat history, [download and run the archiver](https://github.com/pizzaboxer/roblox-web-chat-archiver/releases/download/final/roblox-web-chat-archiver.exe). It will ask you for a .ROBLOSECURITY cookie token, and then generate a archive file in the folder.
+Double-click **`run_archiver.bat`**. On Windows 10/11 it uses the included PowerShell implementation, so there is **nothing extra to install**. It will ask for your `.ROBLOSECURITY` value in a hidden prompt and save the archive JSON into the same folder.
 
-To review your chat history, open `viewer.html` and load the archive file that was generated earlier.
+Then open **`viewer.html`**, click **Load archive**, and choose the generated JSON file.
 
-![image](https://github.com/pizzaboxer/roblox-web-chat-archiver/assets/41478239/d1cd0fd4-405b-4480-bd15-715eb040bc01)
+## Changes from the archived version
+
+- Fixes the pagination bug that discarded the **final page** of conversations and messages;
+- Validates the Roblox session before starting;
+- Handles 401/403/429/5xx responses, timeouts, malformed responses and retries instead of simply crashing;
+- Paces requests to stay around Roblox's tighter 2026 cookie-API rate limits;
+- Continues past deleted/unresolvable users and most individual conversation errors;
+- Never writes the `.ROBLOSECURITY` cookie to the archive or diagnostic file;
+- Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);
+- Replaces the old CDN-based viewer with a fully local viewer and renders archive text with `textContent`.
+
+## Security warning
+
+`.ROBLOSECURITY` is an active Roblox login credential. Do **not** paste it into chats, websites, Discord, GitHub issues, or anywhere else. The included archivers use it only for HTTPS requests to Roblox API hosts and do not save it in the output JSON.
+
+## Diagnostics
+
+If the archiver fails, it creates `archiver-error.txt`. The diagnostic output is designed not to include the cookie value.
+
+## API limitation
+
+This refresh targets the current `apis.roblox.com/platform-chat-api/v1` endpoints used by the latest version of the original project. These are Roblox-controlled web APIs and can change without notice. If Roblox removes historical platform-chat access server-side, a client-side archiver cannot recover data Roblox no longer exposes.
