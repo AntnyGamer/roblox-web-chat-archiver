@@ -458,7 +458,7 @@ try {
     Write-Host 'Never paste your .ROBLOSECURITY value into chats or websites.'
     Write-Host ''
 
-    $secure = Read-Host 'Paste your .ROBLOSECURITY value (hidden)' -AsSecureString
+    $secure = Read-Host 'Paste your .ROBLOSECURITY value' -AsSecureString
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $cookie = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
@@ -470,7 +470,7 @@ try {
     Initialize-RobloxSession -CookieValue $cookie
     Remove-Variable cookie -ErrorAction SilentlyContinue
 
-    Write-Host "`nPreparing 2026 Roblox session..."
+    Write-Host "`nPreparing Roblox session..."
     Refresh-RobloxSession
     Write-Host 'Checking Roblox login...'
     $me = Invoke-RobloxJson -Url "$UsersBase/users/authenticated"

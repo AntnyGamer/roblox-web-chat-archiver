@@ -559,7 +559,7 @@ def main() -> int:
         print("Using .ROBLOSECURITY from the ROBLOSECURITY environment variable.")
     else:
         try:
-            cookie = _normalize_cookie(getpass.getpass("Paste your .ROBLOSECURITY value (hidden): "))
+            cookie = _normalize_cookie(getpass.getpass("Paste your .ROBLOSECURITY value: "))
         except (EOFError, KeyboardInterrupt):
             raise
         except Exception as exc:
@@ -568,7 +568,7 @@ def main() -> int:
     _init_session(cookie)
     cookie = ""
 
-    print("\nPreparing 2026 Roblox session...", flush=True)
+    print("\nPreparing Roblox session...", flush=True)
     refresh_session()
     print("Checking Roblox login...", flush=True)
     current_user = request_json(f"{USERS_BASE}/users/authenticated")
