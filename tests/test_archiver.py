@@ -29,6 +29,13 @@ class ArchiverTests(unittest.TestCase):
         with self.assertRaises(app.AuthenticationError):
             app._normalize_cookie("  ")
 
+    def test_public_requests_reuse_an_uncredentialed_opener(self):
+        with patch.object(app, "_public_opener") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'
+            for _ in range(2):
+                self.assertEqual(app.request_public_json("https://users.roblox.com/v1/users/1"), {"ok": True})
+            self.assertEqual(opener.open.call_count, 2)
+
     def test_participants_are_unique_and_keep_original_order(self):
         conversation = {"participants": [{"userId": 6}, "4", 6, "invalid", 0, {"targetId": 2}, 4]}
         self.assertEqual(app._participant_ids(conversation), [6, 4, 2])

@@ -29,6 +29,7 @@ MIN_REQUEST_INTERVAL = 0.52
 
 _last_request_at = 0.0
 _opener = None
+_public_opener = build_opener()
 _csrf_token: str | None = None
 
 
@@ -246,11 +247,10 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
         headers["Content-Type"] = "application/json"
         data = json.dumps(body, separators=(",", ":")).encode("utf-8")
 
-    opener = build_opener()
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            with opener.open(Request(url, headers=headers, data=data, method=method), timeout=REQUEST_TIMEOUT) as resp:
+            with _public_opener.open(Request(url, headers=headers, data=data, method=method), timeout=REQUEST_TIMEOUT) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw.strip() else {}
         except HTTPError as exc:

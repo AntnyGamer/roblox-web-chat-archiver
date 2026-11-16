@@ -375,18 +375,18 @@ function Get-MessageTime {
 function Get-ParticipantIds {
     param($Convo)
     $raw = Get-PropertyValue $Convo @('participant_user_ids','participantUserIds','participants') @()
-    $ids = @()
+    $ids = [ordered]@{}
     foreach ($item in @($raw)) {
         $value = $item
         if ($item -isnot [string] -and $item -isnot [ValueType]) {
             $value = Get-PropertyValue $item @('id','userId','targetId') $null
         }
         $id = 0L
-        if ($null -ne $value -and [Int64]::TryParse([string]$value, [ref]$id) -and $id -ne 0 -and $ids -notcontains $id) {
-            $ids += $id
+        if ($null -ne $value -and [Int64]::TryParse([string]$value, [ref]$id) -and $id -ne 0) {
+            $ids[[string]$id] = $id
         }
     }
-    return $ids
+    return @($ids.Values)
 }
 
 function Get-CreatedById {

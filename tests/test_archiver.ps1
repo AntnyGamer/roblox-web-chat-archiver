@@ -32,4 +32,6 @@ $loopStopped = $false
 try { $null = Get-AllConversations } catch { $loopStopped = $_.Exception.Message -match 'cursor' }
 if (-not $loopStopped) { throw 'Repeated cursor was not rejected' }
 if ((Get-NextCursor ([pscustomobject]@{ nextCursor='xyz' })) -ne 'xyz') { throw 'Cursor parsing failed' }
+$participants = @(Get-ParticipantIds ([pscustomobject]@{ participants = @(6, 4, 6, 'bad', 0, [pscustomobject]@{ targetId=2 }, 4) }))
+if (($participants -join ',') -ne '6,4,2') { throw 'Participant deduplication changed order or failed' }
 Write-Host 'PASS: PowerShell syntax, final pages, and cursor loop safeguards'
