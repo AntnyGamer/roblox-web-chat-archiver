@@ -86,6 +86,24 @@ class ArchiverTests(unittest.TestCase):
             self.assertEqual(archive["archiveMeta"]["failedConversations"][0]["error"], "transient error")
             self.assertEqual(archive["conversations"]["first"]["messages"][0]["content"], "hello")
 
+    def test_authenticated_user_is_not_fetched_again(self):
+        conversation = {"id": "chat", "participantUserIds": [21, 99]}
+        messages = [{"senderUserId": 21, "text": "hello"}]
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={"chat": conversation}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", return_value=messages))
+            lookup = stack.enter_context(patch.object(app, "resolve_users_batch", return_value={"99": {"name": "Other"}}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        self.assertEqual(set(lookup.call_args.args[0]), {99})
+        self.assertEqual(writer.call_args.args[2]["21"]["name"], "Me")
+        self.assertEqual(writer.call_args.args[2]["0"]["name"], "Roblox")
+
     def test_authenticated_request_refreshes_once_on_401(self):
         denied = HTTPError("https://apis.roblox.com/test", 401, "Unauthorized", {}, io.BytesIO(b"{}"))
         with patch.object(app, "_open", side_effect=[denied, io.BytesIO(b'{"ok":true}')]):
