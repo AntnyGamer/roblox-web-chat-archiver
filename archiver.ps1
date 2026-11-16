@@ -485,7 +485,6 @@ try {
 
     $normalized = [ordered]@{}
     $ids = @{}
-    $ids[[string]$myId] = $myId
     $failures = New-Object System.Collections.ArrayList
     $i = 0
 
@@ -560,6 +559,7 @@ try {
         }
     }
 
+    [void]$ids.Remove([string]$myId)
     Write-Host ("`nResolving {0} users in batches..." -f $ids.Count)
     $people = Resolve-UsersBatch -UserIds @($ids.Values)
     $myDisplay = [string](Get-PropertyValue $me @('displayName','name') $myName)

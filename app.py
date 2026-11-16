@@ -345,6 +345,7 @@ def _participant_ids(convo: dict[str, Any]) -> list[int]:
     if not isinstance(raw, list):
         return []
     result: list[int] = []
+    seen: set[int] = set()
     for item in raw:
         if isinstance(item, dict):
             item = item.get("id") or item.get("userId") or item.get("targetId")
@@ -352,7 +353,8 @@ def _participant_ids(convo: dict[str, Any]) -> list[int]:
             value = int(item)
         except (TypeError, ValueError):
             continue
-        if value and value not in result:
+        if value and value not in seen:
+            seen.add(value)
             result.append(value)
     return result
 

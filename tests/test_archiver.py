@@ -29,6 +29,10 @@ class ArchiverTests(unittest.TestCase):
         with self.assertRaises(app.AuthenticationError):
             app._normalize_cookie("  ")
 
+    def test_participants_are_unique_and_keep_original_order(self):
+        conversation = {"participants": [{"userId": 6}, "4", 6, "invalid", 0, {"targetId": 2}, 4]}
+        self.assertEqual(app._participant_ids(conversation), [6, 4, 2])
+
     def test_final_conversation_page_is_retained(self):
         with patch.object(app, "request_json", side_effect=FIXTURE["conversations"]) as request:
             with contextlib.redirect_stdout(io.StringIO()):

@@ -37,6 +37,7 @@ button,input{font:inherit}.app{height:100vh;display:grid;grid-template-columns:m
 "use strict";
 let archive = null;
 let conversationEntries = [];
+const latestCache = new WeakMap();
 const $ = id => document.getElementById(id);
 const picker = $("picker");
 
@@ -50,21 +51,22 @@ function personFor(id){
 function speakerName(id){ const p=personFor(id); return p ? (p.name || p.displayName || `User ${id}`) : (Number(id)===0 ? "Roblox" : `Unknown user ${id}`); }
 
 function latestMessage(convo){
-  const arr=Array.isArray(convo.messages)?convo.messages:[];
-  if(!arr.length) return null;
-  return arr.reduce((best,m)=>{
-    const t=parseDate(m.sent || m.created_at || m.createdAt || m.timestamp);
-    const bt=best && parseDate(best.sent || best.created_at || best.createdAt || best.timestamp);
-    if(!best) return m;
-    if(t && (!bt || t>bt)) return m;
-    return best;
-  },null);
+  if(!convo || typeof convo!=="object") return null;
+  if(latestCache.has(convo)) return latestCache.get(convo);
+  let best=null, newest=-Infinity;
+  for(const m of Array.isArray(convo.messages)?convo.messages:[]){
+    const at=parseDate(m.sent || m.created_at || m.createdAt || m.timestamp)?.getTime();
+    if(!best || (at!==undefined && at>newest)){ best=m; newest=at??-Infinity; }
+  }
+  latestCache.set(convo,best);
+  return best;
 }
 
 function renderConversationList(filter=""){
   const root=$("convos"); root.textContent="";
   const q=filter.trim().toLowerCase();
   let shown=0;
+  const fragment=document.createDocumentFragment();
   for(const [id,convo] of conversationEntries){
     const title=text(convo.title || convo.name || `Conversation ${id}`);
     const last=latestMessage(convo);
@@ -74,9 +76,10 @@ function renderConversationList(filter=""){
     const el=document.createElement("div"); el.className="convo"; el.dataset.id=id;
     const t=document.createElement("div"); t.className="convo-title"; t.textContent=title;
     const p=document.createElement("div"); p.className="preview"; p.textContent=preview;
-    el.append(t,p); el.addEventListener("click",()=>openConversation(id,el)); root.append(el);
+    el.append(t,p); el.addEventListener("click",()=>openConversation(id,el)); fragment.append(el);
   }
-  if(!shown){ const e=document.createElement("div"); e.className="empty"; e.textContent="No matching conversations."; root.append(e); }
+  if(!shown){ const e=document.createElement("div"); e.className="empty"; e.textContent="No matching conversations."; fragment.append(e); }
+  root.append(fragment);
 }
 
 function openConversation(id, el){
