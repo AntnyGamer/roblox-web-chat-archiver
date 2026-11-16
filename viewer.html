@@ -45,7 +45,7 @@ function parseDate(v){ const d = new Date(v); return Number.isNaN(d.getTime()) ?
 function formatDate(v){ const d=parseDate(v); return d ? d.toLocaleString() : text(v); }
 function personFor(id){
   if(!archive || !archive.people) return null;
-  return archive.people[String(id)] || archive.people[id] || null;
+  return archive.people[id] || null;
 }
 function speakerName(id){ const p=personFor(id); return p ? (p.name || p.displayName || `User ${id}`) : (Number(id)===0 ? "Roblox" : `Unknown user ${id}`); }
 
