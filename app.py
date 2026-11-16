@@ -218,13 +218,11 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
                     wait = min(30.0, 2 ** attempt)
                 print(f"\nRate limited by Roblox; retrying after {wait:g}s...", flush=True)
                 time.sleep(wait)
-                last_error = exc
                 continue
             if 500 <= exc.code <= 599 and attempt < MAX_RETRIES:
                 wait = min(20.0, 2 ** (attempt - 1))
                 print(f"\nRoblox API returned HTTP {exc.code}; retrying in {wait:g}s...", flush=True)
                 time.sleep(wait)
-                last_error = exc
                 continue
             raise ArchiverError(f"Roblox API error HTTP {exc.code}: {detail} ({url})") from exc
         except (URLError, TimeoutError, OSError) as exc:
@@ -256,7 +254,6 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw.strip() else {}
         except HTTPError as exc:
-            last_error = exc
             if exc.code == 429 and attempt < MAX_RETRIES:
                 retry_after = exc.headers.get("Retry-After")
                 try:
@@ -427,7 +424,7 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
 
 
 def resolve_users_batch(user_ids: Iterable[int]) -> dict[str, dict[str, Any]]:
-    unique = sorted({int(uid) for uid in user_ids if int(uid) != 0})
+    unique = sorted(set(map(int, user_ids)) - {0})
     people: dict[str, dict[str, Any]] = {}
 
     for start in range(0, len(unique), 100):
