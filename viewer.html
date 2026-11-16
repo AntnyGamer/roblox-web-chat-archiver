@@ -95,14 +95,16 @@ function openConversation(id, el){
     return ta-tb;
   });
   if(!msgs.length){ const e=document.createElement("div");e.className="empty";e.textContent="No messages in this conversation.";root.append(e);return; }
+  const fragment=document.createDocumentFragment();
   for(const m of msgs){
     const wrap=document.createElement("div"); wrap.className="message";
     const meta=document.createElement("div"); meta.className="meta";
     const name=document.createElement("span"); name.className="name"; name.textContent=speakerName(m.senderTargetId ?? m.sender_user_id ?? m.senderUserId ?? 0);
     const time=document.createElement("span"); time.className="time"; time.textContent=formatDate(m.sent || m.created_at || m.createdAt || m.timestamp);
     const content=document.createElement("div"); content.className="content"; content.textContent=text(m.content ?? m.text ?? m.message);
-    meta.append(name,time); wrap.append(meta,content); root.append(wrap);
+    meta.append(name,time); wrap.append(meta,content); fragment.append(wrap);
   }
+  root.append(fragment);
   root.scrollTop=root.scrollHeight;
   if(window.innerWidth<=760) $("sidebar").classList.add("hide-mobile");
 }
