@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$AppName = 'Roblox Web Chat Archiver (2026 refresh)'
+$AppName = 'Roblox Web Chat Archiver v1.0.1 (2026 refresh)'
 $ChatBase = 'https://apis.roblox.com/platform-chat-api/v1'
 $UsersBase = 'https://users.roblox.com/v1'
 $MinRequestIntervalMs = 520
