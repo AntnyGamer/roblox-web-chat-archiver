@@ -42,7 +42,7 @@ const $ = id => document.getElementById(id);
 const picker = $("picker");
 
 function text(v){ return v == null ? "" : String(v); }
-function parseDate(v){ const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; }
+function parseDate(v){ const n=typeof v==="string"&&/^\d{10,13}$/.test(v)?Number(v):v; const d=new Date(typeof n==="number"&&n<1e11?n*1000:n); return Number.isNaN(d.getTime())?null:d; }
 function formatDate(v){ const d=parseDate(v); return d ? d.toLocaleString() : text(v); }
 function personFor(id){
   if(!archive || !archive.people) return null;

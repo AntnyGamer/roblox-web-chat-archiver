@@ -369,6 +369,13 @@ function Get-MessageTime {
     param($Message)
     $value = Get-PropertyValue $Message @('created_at','createdAt','sent','timestamp') ''
     if ($null -eq $value) { return '' }
+    if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
+        try {
+            $epoch = [double]$value
+            $milliseconds = if ($epoch -gt 10000000000) { $epoch } else { $epoch * 1000 }
+            return [DateTimeOffset]::FromUnixTimeMilliseconds([long]$milliseconds).UtcDateTime.ToString('o')
+        } catch {}
+    }
     return [string]$value
 }
 

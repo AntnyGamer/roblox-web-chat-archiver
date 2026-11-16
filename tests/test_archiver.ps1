@@ -34,4 +34,7 @@ if (-not $loopStopped) { throw 'Repeated cursor was not rejected' }
 if ((Get-NextCursor ([pscustomobject]@{ nextCursor='xyz' })) -ne 'xyz') { throw 'Cursor parsing failed' }
 $participants = @(Get-ParticipantIds ([pscustomobject]@{ participants = @(6, 4, 6, 'bad', 0, [pscustomobject]@{ targetId=2 }, 4) }))
 if (($participants -join ',') -ne '6,4,2') { throw 'Participant deduplication changed order or failed' }
+$numericTime = Get-MessageTime ([pscustomobject]@{ timestamp = 1700000000 })
+$numericMs = Get-MessageTime ([pscustomobject]@{ timestamp = 1700000000000L })
+if ($numericTime -ne '2023-11-14T22:13:20.0000000Z' -or $numericMs -ne $numericTime) { throw 'Unix timestamps were not normalized consistently' }
 Write-Host 'PASS: PowerShell syntax, final pages, and cursor loop safeguards'
