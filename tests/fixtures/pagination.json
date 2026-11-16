@@ -1,0 +1,44 @@
+{
+  "conversations": [
+    {
+      "conversations": [
+        {
+          "id": "first",
+          "name": "First chat"
+        }
+      ],
+      "nextCursor": "page-2"
+    },
+    {
+      "conversations": [
+        {
+          "conversationId": "last",
+          "title": "Last chat"
+        }
+      ],
+      "nextCursor": null
+    }
+  ],
+  "messages": [
+    {
+      "messages": [
+        {
+          "senderUserId": 11,
+          "content": "hello",
+          "createdAt": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "nextCursor": "page-2"
+    },
+    {
+      "messages": [
+        {
+          "senderUserId": 12,
+          "content": "last message",
+          "createdAt": "2026-01-02T00:00:00Z"
+        }
+      ],
+      "nextCursor": null
+    }
+  ]
+}
