@@ -88,9 +88,9 @@ class ArchiverTests(unittest.TestCase):
 
     def test_authenticated_request_refreshes_once_on_401(self):
         denied = HTTPError("https://apis.roblox.com/test", 401, "Unauthorized", {}, io.BytesIO(b"{}"))
-        with patch.object(app, "_open", side_effect=[denied, io.BytesIO(b'{"ok":true}')]), \\
-             patch.object(app, "refresh_session") as refresh:
-            self.assertEqual(app.request_json("https://apis.roblox.com/test"), {"ok": True})
+        with patch.object(app, "_open", side_effect=[denied, io.BytesIO(b'{"ok":true}')]):
+            with patch.object(app, "refresh_session") as refresh:
+                self.assertEqual(app.request_json("https://apis.roblox.com/test"), {"ok": True})
         refresh.assert_called_once_with()
 
 
