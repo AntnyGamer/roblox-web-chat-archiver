@@ -578,6 +578,7 @@ def main() -> int:
     print(f"Found {len(raw_conversations)} conversations.\n")
 
     normalized_conversations: dict[str, dict[str, Any]] = {}
+    current_id = int(current_user["id"])
     unknown_ids: set[int] = set()
     failures: list[dict[str, str]] = []
 
@@ -622,11 +623,10 @@ def main() -> int:
             print("0 messages; metadata saved")
 
     # Authenticated user details are already known; don't re-fetch them.
-    unknown_ids.discard(int(current_user["id"]))
+    unknown_ids.discard(current_id)
     print(f"\nResolving {len(unknown_ids)} users in batches...", flush=True)
     people = resolve_users_batch(unknown_ids)
 
-    current_id = int(current_user["id"])
     people[str(current_id)] = {
         "hasVerifiedBadge": bool(current_user.get("hasVerifiedBadge", False)),
         "name": str(current_user.get("name") or current_id),
