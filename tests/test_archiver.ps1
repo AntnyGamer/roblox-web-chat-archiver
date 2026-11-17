@@ -108,6 +108,15 @@ $loopStopped = $false
 try { $null = Get-AllConversations } catch { $loopStopped = $_.Exception.Message -match 'cursor' }
 if (-not $loopStopped) { throw 'Repeated cursor was not rejected' }
 if ((Get-NextCursor ([pscustomobject]@{ nextCursor='xyz' })) -ne 'xyz') { throw 'Cursor parsing failed' }
+if ((Get-NextCursor ([pscustomobject]@{ next_cursor=$null; nextCursor='fallback' })) -ne 'fallback') {
+    throw 'Null cursor alias must not prevent fetching later pages'
+}
+$previewAlias = Get-PreviewMessage ([pscustomobject]@{
+    preview_message=$null; previewMessage=[pscustomobject]@{ content='retained preview' }
+})
+if ($null -eq $previewAlias -or $previewAlias.content -ne 'retained preview') {
+    throw 'Null preview alias must not hide available conversation preview'
+}
 if ((Get-RetrySeconds '999999999' 4) -ne 120 -or
     (Get-RetrySeconds 'NaN' 4) -ne 4 -or
     (Get-RetrySeconds 'Infinity' 4) -ne 4 -or

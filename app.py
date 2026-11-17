@@ -327,11 +327,14 @@ def _first_list(data: Any, *keys: str, required: bool = False) -> list[Any]:
 
 
 def _next_cursor(data: Any) -> str | None:
-    value = _first_value(data, "next_cursor", "nextCursor", "nextPageCursor", default=None)
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value or None
+    for obj in _nested_dicts(data):
+        for key in ("next_cursor", "nextCursor", "nextPageCursor"):
+            value = obj.get(key)
+            if value is not None:
+                cursor = str(value).strip()
+                if cursor:
+                    return cursor
+    return None
 
 
 def _conversation_id(convo: dict[str, Any]) -> str | None:

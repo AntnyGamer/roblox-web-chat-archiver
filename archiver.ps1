@@ -321,11 +321,13 @@ function Invoke-PublicRobloxJson {
 
 function Get-NextCursor {
     param($Data)
-    $value = Get-PropertyValue $Data @('next_cursor','nextCursor','nextPageCursor') $null
-    if ($null -eq $value) { return $null }
-    $text = ([string]$value).Trim()
-    if ($text.Length -eq 0) { return $null }
-    return $text
+    foreach ($name in @('next_cursor','nextCursor','nextPageCursor')) {
+        $value = Get-PropertyValue $Data @($name) $null
+        if ($null -eq $value) { continue }
+        $text = ([string]$value).Trim()
+        if ($text) { return $text }
+    }
+    return $null
 }
 
 function Get-ConversationId {
@@ -333,6 +335,17 @@ function Get-ConversationId {
     foreach ($name in @('id','conversation_id','conversationId')) {
         $value = Get-PropertyValue $Convo @($name) $null
         if ($null -ne $value -and ([string]$value).Length -gt 0) { return [string]$value }
+    }
+    return $null
+}
+
+function Get-PreviewMessage {
+    param($Convo)
+    foreach ($name in @('preview_message','previewMessage')) {
+        $value = Get-PropertyValue $Convo @($name) $null
+        if ($null -ne $value -and $value -isnot [string] -and $value -isnot [ValueType] -and $value -isnot [array]) {
+            return $value
+        }
     }
     return $null
 }
@@ -605,10 +618,8 @@ try {
                 $messages = @($embedded)
             }
             if (@($messages).Count -eq 0) {
-                $preview = Get-PropertyValue $convo @('preview_message','previewMessage') $null
-                if ($null -ne $preview -and $preview -isnot [string] -and $preview -isnot [ValueType] -and $preview -isnot [array]) {
-                    $messages = @($preview)
-                }
+                $preview = Get-PreviewMessage $convo
+                if ($null -ne $preview) { $messages = @($preview) }
             }
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$archiveError })
         }

@@ -200,6 +200,8 @@ class ArchiverTests(unittest.TestCase):
     def test_nested_paging_fields(self):
         self.assertEqual(app._next_cursor({"data": {"nextPageCursor": " x "}}), "x")
         self.assertIsNone(app._next_cursor({"nextCursor": " "}))
+        self.assertEqual(app._next_cursor({"next_cursor": None, "nextCursor": "next"}), "next")
+        self.assertEqual(app._next_cursor({"next_cursor": " ", "data": {"nextPageCursor": " deep "}}), "deep")
 
     def test_user_batches_and_missing_user_fallback(self):
         def users(url, method="GET", body=None):
