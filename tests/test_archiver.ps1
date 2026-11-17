@@ -128,6 +128,9 @@ try {
     finally { Remove-Item Function:Move-Item -ErrorAction SilentlyContinue }
 }
 finally { Remove-Item -LiteralPath $backupTestDir -Recurse -Force -ErrorAction SilentlyContinue }
+# Restore the real request function after earlier pagination tests stubbed it.
+$realJsonRequest = $definitions | Where-Object { $_.Name -eq 'Invoke-RobloxJson' } | Select-Object -First 1
+. ([scriptblock]::Create($realJsonRequest.Extent.Text))
 $MaxRetries = 6
 $script:MalformedCalls = 0
 $script:UnexpectedSleeps = 0
