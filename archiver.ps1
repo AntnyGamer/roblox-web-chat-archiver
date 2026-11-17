@@ -321,7 +321,7 @@ function Get-AllConversations {
 
     while ($true) {
         $page++
-        $query = @{}
+        $query = @{ 'pageSize' = 30 }
         if ($cursor) { $query['cursor'] = $cursor }
         $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
         $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
@@ -350,7 +350,7 @@ function Get-AllMessages {
     $cursor = $null
     $seen = @{}
     while ($true) {
-        $query = @{ 'conversation_id' = $ConversationId }
+        $query = @{ 'conversation_id' = $ConversationId; 'pageSize' = 30 }
         if ($cursor) { $query['cursor'] = $cursor }
         try {
             $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query

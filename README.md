@@ -34,6 +34,7 @@ For Chrome or Microsoft Edge:
 - Refreshes the Roblox session when appropriate and gives clearer 401/403 authentication errors;
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;
 - Paces authenticated requests to reduce the chance of hitting Roblox's cookie-API rate limits;
+- Requests 30 items per page on conversation and message endpoints to reduce API calls;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;

@@ -58,6 +58,7 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(set(conversations), {"first", "last"})
         self.assertEqual(request.call_count, 2)
         self.assertEqual(request.call_args_list[1].args[1]["cursor"], "page-2")
+        self.assertTrue(all(call.args[1]["pageSize"] == 30 for call in request.call_args_list))
 
     def test_repeated_conversation_cursor_fails_closed(self):
         pages = [{"conversations": [], "nextCursor": "same"},
@@ -118,6 +119,7 @@ class ArchiverTests(unittest.TestCase):
             messages = app.fetch_all_messages("first")
         self.assertEqual([item["content"] for item in messages], ["hello", "last message"])
         self.assertEqual(request.call_args_list[1].args[1]["cursor"], "page-2")
+        self.assertTrue(all(call.args[1]["pageSize"] == 30 for call in request.call_args_list))
 
     def test_failed_later_message_page_preserves_earlier_messages(self):
         pages = [{"messages": [{"senderUserId": 31, "content": "already downloaded"}], "nextCursor": "next"},

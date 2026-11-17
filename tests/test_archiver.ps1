@@ -17,15 +17,18 @@ function Invoke-RobloxJson {
     if ($script:ResponseIndex -ge $script:Responses.Count) { throw 'Unexpected extra fixture request' }
     $response = $script:Responses[$script:ResponseIndex]
     $script:ResponseIndex++
+    $script:LastQuery = $Query
     return $response
 }
 $conversations = Get-AllConversations
 if ($conversations.Count -ne 2 -or -not $conversations.Contains('first') -or -not $conversations.Contains('last')) { throw 'Final conversation page was dropped' }
 if ($script:ResponseIndex -ne 2) { throw 'Wrong conversation request count' }
+if ($script:LastQuery.pageSize -ne 30) { throw 'Conversation requests must ask for 30 items per page' }
 $script:Responses = @($fixture.messages)
 $script:ResponseIndex = 0
 $messages = @(Get-AllMessages -ConversationId 'first')
 if ($messages.Count -ne 2 -or $messages[1].content -ne 'last message') { throw 'Final message page was dropped' }
+if ($script:LastQuery.pageSize -ne 30) { throw 'Message requests must ask for 30 items per page' }
 $script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
 $script:ResponseIndex = 0
 $partialSaved = $false

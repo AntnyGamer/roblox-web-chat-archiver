@@ -398,7 +398,7 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
 
     while True:
         page += 1
-        data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor})
+        data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor, "pageSize": 30})
         items = _first_list(data, "conversations", "Conversations", "items", required=True)
         if any(not isinstance(item, dict) for item in items):
             raise ArchiverError("Malformed Roblox conversation page: items must be objects.")
@@ -428,7 +428,7 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
         try:
             data = request_json(
                 f"{CHAT_BASE}/get-conversation-messages",
-                {"conversation_id": conversation_id, "cursor": cursor},
+                {"conversation_id": conversation_id, "cursor": cursor, "pageSize": 30},
             )
             items = _first_list(data, "messages", "Messages", "items", required=True)
             if any(not isinstance(item, dict) for item in items):
