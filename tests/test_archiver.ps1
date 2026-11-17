@@ -141,17 +141,17 @@ function Invoke-WebRequest {
     return [pscustomobject]@{ Content='{not valid json' }
 }
 try {
-    $authenticatedError = $false
+    $authenticatedError = ''
     try { $null = Invoke-RobloxJson -Url 'https://example.invalid/fixture' }
-    catch { $authenticatedError = $_.Exception.Message -match 'non-JSON' }
-    if (-not $authenticatedError -or $script:MalformedCalls -ne 1 -or $script:UnexpectedSleeps -ne 0) {
-        throw 'Authenticated malformed JSON must fail immediately without retrying'
+    catch { $authenticatedError = $_.Exception.Message }
+    if ($authenticatedError -notmatch 'non-JSON' -or $script:MalformedCalls -ne 1 -or $script:UnexpectedSleeps -ne 0) {
+        throw "Authenticated malformed JSON should fail fast (calls=$($script:MalformedCalls), sleeps=$($script:UnexpectedSleeps), error=$authenticatedError)"
     }
-    $publicError = $false
+    $publicError = ''
     try { $null = Invoke-PublicRobloxJson -Url 'https://example.invalid/fixture' }
-    catch { $publicError = $_.Exception.Message -match 'non-JSON' }
-    if (-not $publicError -or $script:MalformedCalls -ne 2 -or $script:UnexpectedSleeps -ne 0) {
-        throw 'Public malformed JSON must fail immediately without retrying'
+    catch { $publicError = $_.Exception.Message }
+    if ($publicError -notmatch 'non-JSON' -or $script:MalformedCalls -ne 2 -or $script:UnexpectedSleeps -ne 0) {
+        throw "Public malformed JSON should fail fast (calls=$($script:MalformedCalls), sleeps=$($script:UnexpectedSleeps), error=$publicError)"
     }
 }
 finally {

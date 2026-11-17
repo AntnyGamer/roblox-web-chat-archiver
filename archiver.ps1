@@ -198,16 +198,20 @@ function Invoke-RobloxJson {
 
     $lastError = $null
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $invalidJson = $false
         try {
             $response = Invoke-RobloxRaw -Url $Url -Method GET -Query $Query
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
             try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
-            catch { throw [System.FormatException]::new("Roblox returned non-JSON data from $Url.") }
+            catch {
+                $invalidJson = $true
+                throw "Roblox returned non-JSON data from $Url."
+            }
         }
         catch {
             $lastError = $_.Exception
-            if ($lastError -is [System.FormatException]) { throw }
+            if ($invalidJson) { throw }
             $status = $null
             $body = ''
             $response = $_.Exception.Response
@@ -276,6 +280,7 @@ function Invoke-PublicRobloxJson {
     $lastError = $null
 
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $invalidJson = $false
         try {
             if ($Method -eq 'POST') {
                 $jsonBody = $Body | ConvertTo-Json -Depth 12 -Compress
@@ -287,11 +292,14 @@ function Invoke-PublicRobloxJson {
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
             try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
-            catch { throw [System.FormatException]::new("Roblox public API returned non-JSON data from $Url.") }
+            catch {
+                $invalidJson = $true
+                throw "Roblox public API returned non-JSON data from $Url."
+            }
         }
         catch {
             $lastError = $_.Exception
-            if ($lastError -is [System.FormatException]) { throw }
+            if ($invalidJson) { throw }
             $status = $null
             $response = $_.Exception.Response
             if ($null -ne $response) { try { $status = [int]$response.StatusCode } catch {} }
