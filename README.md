@@ -2,7 +2,7 @@
 
 This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
-This revised distribution keeps application version **v2.0.0** and uses release tag **`v2.0.0-r2`**. The original `v2.0.0` tag is unchanged.
+This revised distribution keeps application version **v2.0.0** and uses release tag **`v2.0.0-r3`**. Previous release tags are unchanged.
 
 Roblox changed `.ROBLOSECURITY` rotation behavior in 2026. This refresh uses a real cookie session, accepts Roblox `Set-Cookie` rotations, and calls Roblox's session refresh endpoint before archiving. If Roblox still returns HTTP 401, re-copy the current `.ROBLOSECURITY` value from the logged-in Roblox tab and run it again; an already-invalid session cannot be recovered by the archiver.
 

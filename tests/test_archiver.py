@@ -565,11 +565,14 @@ class ArchiverTests(unittest.TestCase):
                 active -= 1
             uid = int(url.rsplit("/", 1)[-1])
             return {"id": uid, "name": f"User{uid}", "displayName": f"User{uid}"}
-        with patch.object(app, "request_public_json", side_effect=public):
+        with patch.object(app, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as pools, \
+             patch.object(app, "request_public_json", side_effect=public):
             with contextlib.redirect_stdout(io.StringIO()):
-                found = app.resolve_users_batch(range(1, 7))
-        self.assertEqual(len(found), 6)
+                found = app.resolve_users_batch(range(1, 207))
+        self.assertEqual(len(found), 206)
+        pools.assert_called_once()
         self.assertGreaterEqual(peak, 2, "Multiple independent missing profiles should be fetched concurrently")
+        self.assertLessEqual(peak, 3, "Fallback concurrency must stay bounded across batches")
 
     def test_nested_batch_users_avoid_redundant_individual_calls(self):
         with patch.object(app, "request_public_json", return_value={
@@ -620,9 +623,11 @@ class ArchiverTests(unittest.TestCase):
             if method == "POST":
                 return {"data": [{"id": uid, "name": f"user{uid}"} for uid in body["userIds"] if uid != 102]}
             raise app.ArchiverError("offline fixture has no user 102")
-        with patch.object(app, "request_public_json", side_effect=users) as request:
+        with patch.object(app, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as pools, \
+             patch.object(app, "request_public_json", side_effect=users) as request:
             with contextlib.redirect_stdout(io.StringIO()):
                 people = app.resolve_users_batch(range(1, 206))
+        pools.assert_not_called()
         self.assertEqual(len(people), 205)
         self.assertEqual(people["205"]["name"], "user205")
         self.assertIn("_lookupError", people["102"])
@@ -824,7 +829,8 @@ class ArchiverTests(unittest.TestCase):
             app._archive_abort.clear()
 
     def test_authenticated_user_is_not_fetched_again(self):
-        conversation = {"id": "chat", "participantUserIds": [21, 99]}
+        conversation = {"id": "chat", "participantUserIds": [21, 99], "user_data": {
+            "21": {"name": "Account Deleted", "display_name": "Account Deleted"}}}
         messages = [{"senderUserId": 21, "text": "hello"}]
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))

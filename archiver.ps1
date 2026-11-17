@@ -670,26 +670,14 @@ function Get-CreatedById {
 
 function Test-PlaceholderProfile {
     param($Profile)
-    if ($Profile -is [System.Collections.IDictionary]) {
-        $name = [string]$Profile['name']
-        $display = [string]$Profile['displayName']
-        if (-not $display) { $display = [string]$Profile['display_name'] }
-    }
-    else {
-        $name = [string](Get-PropertyValue $Profile @('name') '')
-        $display = [string](Get-PropertyValue $Profile @('displayName','display_name') '')
-    }
-    return $name.Trim() -ieq 'Account Deleted' -or $display.Trim() -ieq 'Account Deleted'
+    # All callers pass normalized profiles; member access supports dictionaries too.
+    return ([string]$Profile.name).Trim() -ieq 'Account Deleted' -or
+        ([string]$Profile.displayName).Trim() -ieq 'Account Deleted'
 }
 
 function Test-UnresolvedProfile {
     param($Profile)
-    $name = if ($Profile -is [System.Collections.IDictionary]) {
-        [string]$Profile['name']
-    } else {
-        [string](Get-PropertyValue $Profile @('name') '')
-    }
-    return (Test-PlaceholderProfile $Profile) -or $name.StartsWith('Unknown user ')
+    return (Test-PlaceholderProfile $Profile) -or ([string]$Profile.name).StartsWith('Unknown user ')
 }
 
 function Get-EmbeddedPeople {
@@ -915,15 +903,16 @@ try {
     [void]$ids.Remove([string]$myId)
     $people = Get-EmbeddedPeople -Conversations @($rawConversations.Values)
     $lookupIds = [ordered]@{}
+    foreach ($key in $people.Keys) {
+        if (Test-PlaceholderProfile $people[$key]) { $lookupIds[$key] = [Int64]$key }
+    }
     $reused = 0
     foreach ($uid in $ids.Values) {
         $key = [string]$uid
-        if ($people.Contains($key) -and -not (Test-PlaceholderProfile $people[$key])) { $reused++ }
+        if ($people.Contains($key) -and -not $lookupIds.Contains($key)) { $reused++ }
         else { $lookupIds[$key] = [Int64]$uid }
     }
-    foreach ($key in @($people.Keys)) {
-        if (Test-PlaceholderProfile $people[$key]) { $lookupIds[$key] = [Int64]$key }
-    }
+    [void]$lookupIds.Remove([string]$myId)
     Write-Host ("Resolving {0} missing or placeholder user profiles in batches ({1} reused)..." -f $lookupIds.Count, $reused)
     $lookups = Resolve-UsersBatch -UserIds @($lookupIds.Values)
     foreach ($person in $lookups.GetEnumerator()) {
