@@ -78,7 +78,7 @@ if (-not $invalidConversations) { throw 'Malformed conversation pages must not s
 $script:Responses = @([pscustomobject]@{ conversations=@('unexpected string') })
 $script:ResponseIndex = 0
 $invalidMembers = $false
-try { $null = Get-AllConversations } catch { $invalidMembers = $_.Exception.Message -match 'items must be objects' }
+try { $null = Get-AllConversations } catch { $invalidMembers = $_.Exception.Message -match 'valid ID' }
 if (-not $invalidMembers) { throw 'Malformed conversation entries must not be skipped' }
 $nestedUsers = @(Get-ItemArray ([pscustomobject]@{ data=[pscustomobject]@{ users=@([pscustomobject]@{ id=89 }) } }) @('data','users','items'))
 if ($nestedUsers.Count -ne 1 -or $nestedUsers[0].id -ne 89) { throw 'Nested user batches should avoid individual lookups' }

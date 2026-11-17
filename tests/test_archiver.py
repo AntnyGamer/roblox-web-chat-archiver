@@ -109,7 +109,7 @@ class ArchiverTests(unittest.TestCase):
     def test_invalid_collection_members_are_not_silently_skipped(self):
         with patch.object(app, "request_json", return_value={"conversations": [{"id": "one"}, None]}):
             with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(app.ArchiverError, "items must be objects"):
+                with self.assertRaisesRegex(app.ArchiverError, "valid ID"):
                     app.fetch_all_conversations()
         pages = [{"messages": [{"content": "retained"}], "nextCursor": "next"},
                  {"messages": [{"content": "valid"}, "invalid"]}]
