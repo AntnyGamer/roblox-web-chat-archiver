@@ -18,7 +18,7 @@ FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "pagination.json").re
 
 class ArchiverTests(unittest.TestCase):
     def test_release_version_is_consistent(self):
-        version = "v1.0.1"
+        version = "v1.1.0"
         root = Path(__file__).resolve().parents[1]
         self.assertIn(version, app.APP_NAME)
         self.assertIn(version, (root / "archiver.ps1").read_text(encoding="utf-8-sig"))

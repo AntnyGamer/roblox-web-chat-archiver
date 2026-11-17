@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Roblox Web Chat Archiver v1.0.1
+title Roblox Web Chat Archiver v1.1.0
 
 where powershell.exe >nul 2>nul
 if %errorlevel%==0 (
