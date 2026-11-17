@@ -8,6 +8,18 @@ if ($parseErrors.Count -gt 0) { throw "PowerShell syntax errors: $($parseErrors 
 # Load only function definitions so no Roblox credentials, prompts or requests are used.
 $definitions = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 foreach ($definition in $definitions) { . ([scriptblock]::Create($definition.Extent.Text)) }
+# Roblox may return null primary fields but usable alias or nested response fields.
+$nullAlias = [pscustomobject]@{ content=$null; text='preserved text' }
+if ((Get-MessageContent $nullAlias) -ne 'preserved text') { throw 'Null message content hid text alias' }
+if ((Get-MessageSenderId ([pscustomobject]@{ sender_user_id=$null; senderUserId=51 })) -ne 51) {
+    throw 'Null sender ID hid valid sender alias'
+}
+if ((Get-PropertyValue ([pscustomobject]@{ content=$null; data=[pscustomobject]@{ content='nested' } }) @('content') '') -ne 'nested') {
+    throw 'Null outer field hid usable nested response data'
+}
+if ((Get-PropertyValue ([pscustomobject]@{ hasVerifiedBadge=$false }) @('hasVerifiedBadge') $true) -ne $false) {
+    throw 'False-valued fields must not be treated as null'
+}
 $ChatBase = 'https://example.invalid/fixture'
 $fixture = Get-Content (Join-Path $PSScriptRoot 'fixtures\pagination.json') -Raw | ConvertFrom-Json
 $script:Responses = @($fixture.conversations)

@@ -1,4 +1,4 @@
-# Roblox web chat archiver — v1.1.1 (2026 compatibility refresh)
+# Roblox web chat archiver — v2.0.0 (2026 compatibility refresh)
 
 This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
@@ -42,6 +42,7 @@ For Chrome or Microsoft Edge:
 - Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
 - Keeps conversation metadata and any embedded message previews when Roblox returns a conversation without an ID, flags its history as incomplete, and continues with other conversations;
 - Records metadata-only and failed conversation information in `archiveMeta` so archive completeness is easier to understand;
+- Fixes PowerShell fallback when Roblox supplies null primary fields but valid alternate fields, preserving message text and sender IDs;
 - Gives each export a unique filename to prevent one backup from overwriting another; Python also writes private archives with restricted Unix file permissions;
 - Never writes the `.ROBLOSECURITY` value to the archive and redacts it from PowerShell diagnostics if it is still present during an early failure;
 - Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);

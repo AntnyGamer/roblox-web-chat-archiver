@@ -8,6 +8,9 @@ on:
       release_tag:
         required: true
         type: string
+      release_sha:
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.ref_name }}
+          ref: ${{ inputs.release_sha || inputs.release_tag || github.ref_name }}
           persist-credentials: false
       - name: Test Windows PowerShell archiver offline
         shell: powershell
@@ -33,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.ref_name }}
+          ref: ${{ inputs.release_sha || inputs.release_tag || github.ref_name }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -82,6 +85,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
           RELEASE_ZIP: ${{ steps.package.outputs.path }}
+          RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -98,6 +102,7 @@ jobs:
 
           Note: Roblox does not expose complete message history for conversations without a server ID; those are explicitly marked incomplete.
           NOTES
-          gh release create "$RELEASE_TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Roblox Web Chat Archiver $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
+          gh release create "$RELEASE_TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "Roblox Web Chat Archiver $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = "$RELEASE_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')" = "false"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$RELEASE_ZIP"
