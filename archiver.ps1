@@ -363,6 +363,12 @@ function Get-AvailableMessages {
 function Merge-MetadataValues {
     param($Old, $New, [string]$Field = '')
     if ($null -eq $New) { return $Old }
+    if ($Field -in @('name','display_name','displayName') -and
+        $New -is [string] -and $New.Trim() -ieq 'Account Deleted' -and
+        $Old -is [string] -and -not [string]::IsNullOrWhiteSpace($Old) -and
+        $Old.Trim() -ine 'Account Deleted') {
+        return $Old
+    }
     if ($New -is [string] -and $New.Length -eq 0) { return $Old }
     if ($New -is [array]) {
         if ($New.Count -eq 0) { return ,$Old }
@@ -662,6 +668,18 @@ function Get-CreatedById {
     return 0L
 }
 
+function Test-PlaceholderProfile {
+    param($Profile)
+    # All callers pass normalized profiles; member access supports dictionaries too.
+    return ([string]$Profile.name).Trim() -ieq 'Account Deleted' -or
+        ([string]$Profile.displayName).Trim() -ieq 'Account Deleted'
+}
+
+function Test-UnresolvedProfile {
+    param($Profile)
+    return (Test-PlaceholderProfile $Profile) -or ([string]$Profile.name).StartsWith('Unknown user ')
+}
+
 function Get-EmbeddedPeople {
     param([object[]]$Conversations)
     $found = [ordered]@{}
@@ -678,9 +696,13 @@ function Get-EmbeddedPeople {
             $display = [string](Get-PropertyValue $entry @('display_name','displayName') '')
             if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($display)) { continue }
             $verified = [bool](Get-PropertyValue $entry @('is_verified','hasVerifiedBadge') $false)
-            $found[[string]$uid] = [ordered]@{
+            $candidate = [ordered]@{
                 hasVerifiedBadge=$verified; name=$name; displayName=$display; targetId=$uid
             }
+            $key = [string]$uid
+            if ($found.Contains($key) -and -not (Test-PlaceholderProfile $found[$key]) -and
+                (Test-PlaceholderProfile $candidate)) { continue }
+            $found[$key] = $candidate
         }
     }
     return $found
@@ -718,17 +740,25 @@ function Resolve-UsersBatch {
             Write-Host ("  Batch user lookup failed; falling back for this batch. ({0})" -f $_.Exception.Message) -ForegroundColor Yellow
         }
 
+        # The batch endpoint can return placeholders for IDs that still have
+        # real usernames on the individual endpoint. Retry only those IDs.
         foreach ($uid in $batch) {
-            if ($result.Contains([string]$uid)) { continue }
+            $key = [string]$uid
+            if ($result.Contains($key) -and -not (Test-UnresolvedProfile $result[$key])) { continue }
             try {
                 $user = Invoke-PublicRobloxJson -Url "$UsersBase/users/$uid" -Method GET
                 $name = [string](Get-PropertyValue $user @('name') "Unknown user $uid")
                 $display = [string](Get-PropertyValue $user @('displayName','name') $name)
                 $verified = [bool](Get-PropertyValue $user @('hasVerifiedBadge') $false)
-                $result[[string]$uid] = [ordered]@{ hasVerifiedBadge=$verified; name=$name; displayName=$display; targetId=[Int64]$uid }
+                $candidate = [ordered]@{ hasVerifiedBadge=$verified; name=$name; displayName=$display; targetId=[Int64]$uid }
+                if (-not $result.Contains($key) -or -not (Test-UnresolvedProfile $candidate)) {
+                    $result[$key] = $candidate
+                }
             }
             catch {
-                $result[[string]$uid] = [ordered]@{ hasVerifiedBadge=$false; name="Unknown user $uid"; displayName="Unknown user $uid"; targetId=[Int64]$uid; _lookupError=$_.Exception.Message }
+                if (-not $result.Contains($key)) {
+                    $result[$key] = [ordered]@{ hasVerifiedBadge=$false; name="Unknown user $uid"; displayName="Unknown user $uid"; targetId=[Int64]$uid; _lookupError=$_.Exception.Message }
+                }
             }
         }
     }
@@ -872,13 +902,24 @@ try {
 
     [void]$ids.Remove([string]$myId)
     $people = Get-EmbeddedPeople -Conversations @($rawConversations.Values)
-    $missing = New-Object System.Collections.ArrayList
-    foreach ($uid in $ids.Values) {
-        if (-not $people.Contains([string]$uid)) { [void]$missing.Add([Int64]$uid) }
+    $lookupIds = [ordered]@{}
+    foreach ($key in $people.Keys) {
+        if (Test-PlaceholderProfile $people[$key]) { $lookupIds[$key] = [Int64]$key }
     }
-    Write-Host ("Resolving {0} missing user profiles in batches ({1} reused)..." -f $missing.Count, ($ids.Count - $missing.Count))
-    $lookups = Resolve-UsersBatch -UserIds @($missing.ToArray())
-    foreach ($person in $lookups.GetEnumerator()) { $people[$person.Key] = $person.Value }
+    $reused = 0
+    foreach ($uid in $ids.Values) {
+        $key = [string]$uid
+        if ($people.Contains($key) -and -not $lookupIds.Contains($key)) { $reused++ }
+        else { $lookupIds[$key] = [Int64]$uid }
+    }
+    [void]$lookupIds.Remove([string]$myId)
+    Write-Host ("Resolving {0} missing or placeholder user profiles in batches ({1} reused)..." -f $lookupIds.Count, $reused)
+    $lookups = Resolve-UsersBatch -UserIds @($lookupIds.Values)
+    foreach ($person in $lookups.GetEnumerator()) {
+        if (-not $people.Contains($person.Key) -or -not (Test-UnresolvedProfile $person.Value)) {
+            $people[$person.Key] = $person.Value
+        }
+    }
     $myDisplay = [string](Get-PropertyValue $me @('displayName','name') $myName)
     $myVerified = [bool](Get-PropertyValue $me @('hasVerifiedBadge') $false)
     $people[[string]$myId] = [ordered]@{ hasVerifiedBadge=$myVerified; name=$myName; displayName=$myDisplay; targetId=$myId }

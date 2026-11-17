@@ -7,6 +7,7 @@ Roblox API hosts used by this program and is never written to the archive.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor
 import getpass
@@ -446,6 +447,12 @@ def _merge_nonempty_metadata(previous: dict[str, Any], current: dict[str, Any]) 
         if value is None or value == "" or value == [] or value == {}:
             continue
         old_value = merged.get(field)
+        if (field in ("name", "display_name", "displayName")
+                and isinstance(value, str) and value.strip().casefold() == "account deleted"
+                and isinstance(old_value, str) and old_value.strip()
+                and old_value.strip().casefold() != "account deleted"):
+            # A later inventory can redact a previously supplied real name.
+            continue
         if field in ("preview_message", "previewMessage") and isinstance(old_value, dict) and isinstance(value, dict):
             # Previews are distinct messages, not arbitrary nested metadata:
             # never splice the text of one into the timestamp of another.
@@ -647,8 +654,19 @@ def _fetch_archive_messages(conversation_id: str) -> list[dict[str, Any]]:
         raise
 
 
+def _placeholder_profile(profile: dict[str, Any]) -> bool:
+    """Roblox chat metadata can label otherwise identifiable accounts as deleted."""
+    name, display = profile.get("name"), profile.get("displayName")
+    return (isinstance(name, str) and name.strip().casefold() == "account deleted"
+            or isinstance(display, str) and display.strip().casefold() == "account deleted")
+
+
+def _unresolved_profile(profile: dict[str, Any]) -> bool:
+    return _placeholder_profile(profile) or str(profile.get("name", "")).startswith("Unknown user ")
+
+
 def _embedded_people(conversations: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Reuse complete profiles already present in the authenticated conversation payload."""
+    """Reuse actual profiles and keep placeholders available as fallback data."""
     people: dict[str, dict[str, Any]] = {}
     for convo in conversations:
         embedded = convo.get("user_data") or convo.get("userData")
@@ -665,66 +683,73 @@ def _embedded_people(conversations: Iterable[dict[str, Any]]) -> dict[str, dict[
             display = entry.get("display_name") or entry.get("displayName")
             if uid <= 0 or not isinstance(name, str) or not name.strip() or not isinstance(display, str) or not display.strip():
                 continue
-            people[str(uid)] = {
+            candidate = {
                 "name": name, "displayName": display,
                 "hasVerifiedBadge": bool(entry.get("is_verified", entry.get("hasVerifiedBadge", False))),
                 "targetId": uid,
             }
+            previous = people.get(str(uid))
+            if previous and not _placeholder_profile(previous) and _placeholder_profile(candidate):
+                continue
+            people[str(uid)] = candidate
     return people
+
+
+def _public_profile(uid: int, user: Any) -> dict[str, Any]:
+    user = user if isinstance(user, dict) else {}
+    name = str(user.get("name") or f"Unknown user {uid}")
+    return {
+        "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)),
+        "name": name,
+        "displayName": str(user.get("displayName") or name),
+        "targetId": uid,
+    }
+
+
+def _lookup_public_user(uid: int) -> tuple[int, dict[str, Any]]:
+    """Fallback for missing or placeholder profiles; independent requests can overlap."""
+    try:
+        return uid, _public_profile(uid, request_public_json(f"{USERS_BASE}/users/{uid}"))
+    except ArchiverError as exc:
+        return uid, dict(_public_profile(uid, None), _lookupError=str(exc))
 
 
 def resolve_users_batch(user_ids: Iterable[int]) -> dict[str, dict[str, Any]]:
     unique = sorted(set(map(int, user_ids)) - {0})
     people: dict[str, dict[str, Any]] = {}
 
-    for start in range(0, len(unique), 100):
-        batch = unique[start:start + 100]
-        print(f"  resolving users {start + 1}-{start + len(batch)} of {len(unique)}", flush=True)
-        try:
-            payload = request_public_json(
-                f"{USERS_BASE}/users",
-                method="POST",
-                body={"userIds": batch, "excludeBannedUsers": False},
-            )
-            for user in _first_list(payload, "data", "users", "items"):
-                if not isinstance(user, dict):
-                    continue
-                try:
-                    uid = int(user.get("id") or user.get("userId") or user.get("targetId"))
-                except (TypeError, ValueError):
-                    continue
-                if not uid:
-                    continue
-                name = str(user.get("name") or f"Unknown user {uid}")
-                people[str(uid)] = {
-                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)),
-                    "name": name,
-                    "displayName": str(user.get("displayName") or name),
-                    "targetId": uid,
-                }
-        except ArchiverError as exc:
-            print(f"  Batch user lookup failed; falling back for this batch. ({exc})", flush=True)
-
-        for uid in batch:
-            if str(uid) in people:
-                continue
+    with ExitStack() as stack:
+        pool = None  # Create workers only for parallel fallbacks; reuse across batches.
+        for start in range(0, len(unique), 100):
+            batch = unique[start:start + 100]
+            print(f"  resolving users {start + 1}-{start + len(batch)} of {len(unique)}", flush=True)
             try:
-                user = request_public_json(f"{USERS_BASE}/users/{uid}")
-                name = str(user.get("name") or f"Unknown user {uid}") if isinstance(user, dict) else f"Unknown user {uid}"
-                people[str(uid)] = {
-                    "hasVerifiedBadge": bool(user.get("hasVerifiedBadge", False)) if isinstance(user, dict) else False,
-                    "name": name,
-                    "displayName": str(user.get("displayName") or name) if isinstance(user, dict) else name,
-                    "targetId": uid,
-                }
+                payload = request_public_json(
+                    f"{USERS_BASE}/users",
+                    method="POST",
+                    body={"userIds": batch, "excludeBannedUsers": False},
+                )
+                for user in _first_list(payload, "data", "users", "items"):
+                    if not isinstance(user, dict):
+                        continue
+                    try:
+                        uid = int(user.get("id") or user.get("userId") or user.get("targetId"))
+                    except (TypeError, ValueError):
+                        continue
+                    if uid:
+                        people[str(uid)] = _public_profile(uid, user)
             except ArchiverError as exc:
-                people[str(uid)] = {
-                    "hasVerifiedBadge": False,
-                    "name": f"Unknown user {uid}",
-                    "displayName": f"Unknown user {uid}",
-                    "targetId": uid,
-                    "_lookupError": str(exc),
-                }
+                print(f"  Batch user lookup failed; falling back for this batch. ({exc})", flush=True)
+
+            # Bulk placeholders may still have real names at the individual endpoint.
+            missing = [uid for uid in batch if str(uid) not in people or _unresolved_profile(people[str(uid)])]
+            if len(missing) > 1 and pool is None:
+                pool = stack.enter_context(ThreadPoolExecutor(max_workers=3))
+            lookup = pool.map if len(missing) > 1 else map
+            for uid, candidate in lookup(_lookup_public_user, missing):
+                key = str(uid)
+                if key not in people or not _unresolved_profile(candidate):
+                    people[key] = candidate
     return people
 
 
@@ -918,12 +943,16 @@ def main() -> int:
         pool.shutdown(wait=True)
 
     # Conversation metadata already includes many complete user profiles.
-    unknown_ids.discard(current_id)
     people = _embedded_people(raw_conversations.values())
-    remaining_ids = unknown_ids.difference(map(int, people))
-    print(f"\nResolving {len(remaining_ids)} missing user profiles in batches "
-          f"({len(unknown_ids) - len(remaining_ids)} reused)...", flush=True)
-    people.update(resolve_users_batch(remaining_ids))
+    reusable_ids = {int(uid) for uid, profile in people.items() if not _placeholder_profile(profile)}
+    # Retry all embedded placeholders, including users present only in user_data.
+    remaining_ids = (unknown_ids | set(map(int, people))) - reusable_ids - {current_id}
+    unknown_ids.discard(current_id)
+    print(f"\nResolving {len(remaining_ids)} missing or placeholder user profiles in batches "
+          f"({len(unknown_ids & reusable_ids)} reused)...", flush=True)
+    for uid, profile in resolve_users_batch(remaining_ids).items():
+        if uid not in people or not _unresolved_profile(profile):
+            people[uid] = profile
 
     people[str(current_id)] = {
         "hasVerifiedBadge": bool(current_user.get("hasVerifiedBadge", False)),

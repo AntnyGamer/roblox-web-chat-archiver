@@ -1,10 +1,10 @@
-name: Publish Roblox Web Chat Archiver v2.0.0 revision 2
+name: Publish Roblox Web Chat Archiver v2.0.0 revision 3
 
 on:
   push:
     branches: [main]
     paths:
-      - .github/workflows/publish-v2.0.0-r2.yml
+      - .github/workflows/publish-v2.0.0-r3.yml
 
 permissions:
   contents: write
@@ -14,9 +14,9 @@ permissions:
 
 jobs:
   release:
-    if: startsWith(github.event.head_commit.message, 'Prepare and publish Roblox Web Chat Archiver v2.0.0-r2')
+    if: startsWith(github.event.head_commit.message, 'Prepare and publish Roblox Web Chat Archiver v2.0.0-r3')
     uses: ./.github/workflows/release.yml
     with:
-      release_tag: v2.0.0-r2
+      release_tag: v2.0.0-r3
       release_sha: ${{ github.sha }}
 

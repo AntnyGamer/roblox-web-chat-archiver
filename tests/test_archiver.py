@@ -483,6 +483,97 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(writer.call_args.args[2]["99"]["name"], "Known")
         self.assertEqual(writer.call_args.args[2]["100"]["name"], "Resolved")
 
+    def test_deleted_embedded_profiles_are_retried_but_valid_names_stay_cached(self):
+        conversations = [
+            {"id": "chat", "participantUserIds": [99, 100],
+             "user_data": {
+                 "99": {"name": "KnownUser", "display_name": "Known"},
+                 "100": {"name": "Account Deleted", "display_name": "Account Deleted"},
+                 "101": {"name": " account deleted ", "display_name": "Unknown"},
+             }},
+            {"id": "other", "user_data": {
+                "99": {"name": "Account Deleted", "display_name": "Account Deleted"}}},
+        ]
+        cached = app._embedded_people(conversations)
+        self.assertEqual(cached["99"]["name"], "KnownUser")
+        self.assertTrue(app._placeholder_profile(cached["100"]))
+        self.assertTrue(app._placeholder_profile(cached["101"]))
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={
+                "chat": conversations[0], "other": conversations[1]}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", return_value=[]))
+            lookup = stack.enter_context(patch.object(app, "resolve_users_batch", return_value={
+                "100": {"name": "RecoveredUser", "displayName": "Recovered", "targetId": 100},
+                "101": {"name": "Unknown user 101", "displayName": "Unknown user 101",
+                        "targetId": 101, "_lookupError": "404"},
+            }))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        self.assertEqual(set(lookup.call_args.args[0]), {100, 101})
+        profiles = writer.call_args.args[2]
+        self.assertEqual(profiles["99"]["name"], "KnownUser")
+        self.assertEqual(profiles["100"]["name"], "RecoveredUser")
+        self.assertEqual(profiles["101"]["name"].strip().casefold(), "account deleted",
+                         "Failed lookups should not discard the existing name placeholder")
+
+    def test_bulk_placeholder_is_retried_at_individual_endpoint(self):
+        calls = []
+
+        def api(url, method="GET", body=None):
+            calls.append((method, url))
+            if method == "POST":
+                return {"data": [
+                    {"id": 99, "name": "ValidUser", "displayName": "Valid"},
+                    {"id": 100, "name": "Account Deleted", "displayName": "Account Deleted"},
+                    {"id": 101, "name": "Account Deleted", "displayName": "Account Deleted"},
+                ]}
+            if url.endswith("/100"):
+                return {"id": 100, "name": "RestoredUser", "displayName": "Restored"}
+            if url.endswith("/101"):
+                raise app.ArchiverError("Unavailable")
+            self.fail(f"Unexpected public user lookup: {url}")
+
+        with patch.object(app, "request_public_json", side_effect=api):
+            with contextlib.redirect_stdout(io.StringIO()):
+                found = app.resolve_users_batch([99, 100, 101])
+        self.assertEqual(found["99"]["name"], "ValidUser")
+        self.assertEqual(found["100"]["name"], "RestoredUser")
+        self.assertEqual(found["101"]["name"], "Account Deleted")
+        self.assertEqual(sum(method == "POST" for method, _ in calls), 1)
+        self.assertEqual({url.rsplit("/", 1)[-1] for method, url in calls if method == "GET"},
+                         {"100", "101"})
+
+    def test_parallel_public_profile_fallback_overlaps_requests(self):
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+        def public(url, method="GET", body=None):
+            nonlocal active, peak
+            if method == "POST":
+                return {"data": []}
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.025)
+            with lock:
+                active -= 1
+            uid = int(url.rsplit("/", 1)[-1])
+            return {"id": uid, "name": f"User{uid}", "displayName": f"User{uid}"}
+        with patch.object(app, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as pools, \
+             patch.object(app, "request_public_json", side_effect=public):
+            with contextlib.redirect_stdout(io.StringIO()):
+                found = app.resolve_users_batch(range(1, 207))
+        self.assertEqual(len(found), 206)
+        pools.assert_called_once()
+        self.assertGreaterEqual(peak, 2, "Multiple independent missing profiles should be fetched concurrently")
+        self.assertLessEqual(peak, 3, "Fallback concurrency must stay bounded across batches")
+
     def test_nested_batch_users_avoid_redundant_individual_calls(self):
         with patch.object(app, "request_public_json", return_value={
             "data": {"users": [{"id": 89, "name": "Found"}]}}) as request:
@@ -532,9 +623,11 @@ class ArchiverTests(unittest.TestCase):
             if method == "POST":
                 return {"data": [{"id": uid, "name": f"user{uid}"} for uid in body["userIds"] if uid != 102]}
             raise app.ArchiverError("offline fixture has no user 102")
-        with patch.object(app, "request_public_json", side_effect=users) as request:
+        with patch.object(app, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as pools, \
+             patch.object(app, "request_public_json", side_effect=users) as request:
             with contextlib.redirect_stdout(io.StringIO()):
                 people = app.resolve_users_batch(range(1, 206))
+        pools.assert_not_called()
         self.assertEqual(len(people), 205)
         self.assertEqual(people["205"]["name"], "user205")
         self.assertIn("_lookupError", people["102"])
@@ -736,7 +829,8 @@ class ArchiverTests(unittest.TestCase):
             app._archive_abort.clear()
 
     def test_authenticated_user_is_not_fetched_again(self):
-        conversation = {"id": "chat", "participantUserIds": [21, 99]}
+        conversation = {"id": "chat", "participantUserIds": [21, 99], "user_data": {
+            "21": {"name": "Account Deleted", "display_name": "Account Deleted"}}}
         messages = [{"senderUserId": 21, "text": "hello"}]
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
