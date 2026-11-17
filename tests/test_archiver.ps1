@@ -60,7 +60,7 @@ if ((Get-ConversationId ([pscustomobject]@{ id=$null; conversationId='other-id' 
 }
 $sourceForMissingId = Get-Content -LiteralPath $scriptPath -Raw
 if ($sourceForMissingId -notmatch "preview_message','previewMessage" -or
-    $sourceForMissingId -notmatch "\$archiveStatus = 'missing-id'") {
+    $sourceForMissingId -notmatch 'archiveStatus = ''missing-id''') {
     throw 'ID-less conversation archiving must preserve embedded previews and mark missing IDs'
 }
 $script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
