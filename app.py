@@ -41,6 +41,12 @@ class AuthenticationError(ArchiverError):
     pass
 
 
+class PartialMessagesError(ArchiverError):
+    def __init__(self, message: str, messages: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.messages = messages
+
+
 def _normalize_cookie(value: str) -> str:
     value = value.strip().strip('"').strip("'")
     if value.lower().startswith(".roblosecurity="):
@@ -404,10 +410,17 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
     seen_cursors: set[str] = set()
 
     while True:
-        data = request_json(
-            f"{CHAT_BASE}/get-conversation-messages",
-            {"conversation_id": conversation_id, "cursor": cursor},
-        )
+        try:
+            data = request_json(
+                f"{CHAT_BASE}/get-conversation-messages",
+                {"conversation_id": conversation_id, "cursor": cursor},
+            )
+        except AuthenticationError:
+            raise
+        except ArchiverError as exc:
+            if messages:
+                raise PartialMessagesError(str(exc), messages) from exc
+            raise
         items = _first_list(data, "messages", "Messages", "items")
         messages.extend(item for item in items if isinstance(item, dict))
 
@@ -415,9 +428,9 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
         if not next_cursor:
             break
         if next_cursor in seen_cursors:
-            raise ArchiverError(
+            raise PartialMessagesError(
                 f"Roblox returned the same message cursor twice for conversation {conversation_id}; "
-                "stopping that conversation to avoid an infinite loop."
+                "stopping that conversation to avoid an infinite loop.", messages
             )
         seen_cursors.add(next_cursor)
         cursor = next_cursor
@@ -594,6 +607,7 @@ def main() -> int:
             unknown_ids.add(creator)
         unknown_ids.update(_participant_ids(raw_convo))
 
+        error = None
         try:
             messages = fetch_all_messages(cid)
         except AuthenticationError:
@@ -601,14 +615,12 @@ def main() -> int:
         except ArchiverError as exc:
             error = str(exc)
             failures.append({"conversationId": cid, "title": str(title), "error": error})
-            normalized_conversations[cid] = normalize_conversation(
-                raw_convo, cid, [], archive_status="metadata-only-error", archive_error=error
-            )
-            print(f"FAILED; metadata saved ({error})")
-            continue
+            messages = exc.messages if isinstance(exc, PartialMessagesError) else []
 
-        status = "metadata-only-empty-response" if not messages else None
-        normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status)
+        status = ("partial-error" if messages else "metadata-only-error") if error else (
+            "metadata-only-empty-response" if not messages else None
+        )
+        normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status, archive_error=error)
         normalized_conversations[cid] = normalized
 
         for message in normalized["messages"]:
@@ -619,7 +631,9 @@ def main() -> int:
             if sender_id:
                 unknown_ids.add(sender_id)
 
-        if messages:
+        if error:
+            print(f"FAILED; {len(messages)} messages saved ({error})")
+        elif messages:
             print(f"{len(messages)} messages")
         else:
             print("0 messages; metadata saved")

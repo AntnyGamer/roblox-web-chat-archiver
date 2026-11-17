@@ -26,6 +26,15 @@ $script:Responses = @($fixture.messages)
 $script:ResponseIndex = 0
 $messages = @(Get-AllMessages -ConversationId 'first')
 if ($messages.Count -ne 2 -or $messages[1].content -ne 'last message') { throw 'Final message page was dropped' }
+$script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
+$script:ResponseIndex = 0
+$partialSaved = $false
+try { $null = Get-AllMessages -ConversationId 'first' }
+catch {
+    $partial = @($_.Exception.Data['PartialMessages'])
+    $partialSaved = $partial.Count -eq 1 -and $partial[0].content -eq 'saved message'
+}
+if (-not $partialSaved) { throw 'A later page error discarded previously fetched messages' }
 $script:Responses = @([pscustomobject]@{ conversations=@(); nextCursor='same' }, [pscustomobject]@{ conversations=@(); nextCursor='same' })
 $script:ResponseIndex = 0
 $loopStopped = $false

@@ -62,6 +62,22 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual([item["content"] for item in messages], ["hello", "last message"])
         self.assertEqual(request.call_args_list[1].args[1]["cursor"], "page-2")
 
+    def test_failed_later_message_page_preserves_earlier_messages(self):
+        pages = [{"messages": [{"senderUserId": 31, "content": "already downloaded"}], "nextCursor": "next"},
+                 app.ArchiverError("second page unavailable")]
+        with patch.object(app, "request_json", side_effect=pages):
+            with self.assertRaises(app.PartialMessagesError) as caught:
+                app.fetch_all_messages("first")
+        self.assertEqual(caught.exception.messages[0]["content"], "already downloaded")
+        self.assertIn("second page unavailable", str(caught.exception))
+
+    def test_authentication_error_after_first_page_still_aborts(self):
+        pages = [{"messages": [{"content": "downloaded"}], "nextCursor": "next"},
+                 app.AuthenticationError("session expired")]
+        with patch.object(app, "request_json", side_effect=pages):
+            with self.assertRaises(app.AuthenticationError):
+                app.fetch_all_messages("first")
+
     def test_repeated_message_cursor_fails_closed(self):
         pages = [{"messages": [], "nextCursor": "same"},
                  {"messages": [], "nextCursor": "same"}]
@@ -104,6 +120,26 @@ class ArchiverTests(unittest.TestCase):
             self.assertFalse(result.with_suffix(result.suffix + ".tmp").exists())
             self.assertEqual(archive["archiveMeta"]["failedConversations"][0]["error"], "transient error")
             self.assertEqual(archive["conversations"]["first"]["messages"][0]["content"], "hello")
+
+    def test_main_saves_partial_messages_and_marks_failure(self):
+        conversation = {"id": "chat", "name": "Somebody"}
+        saved = {}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            for name in ("_init_session", "refresh_session"):
+                stack.enter_context(patch.object(app, name))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={"chat": conversation}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", side_effect=app.PartialMessagesError(
+                "later page failed", [{"senderUserId": 33, "content": "saved message"}])))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        saved = writer.call_args.args[3]["chat"]
+        self.assertEqual(saved["_archiveStatus"], "partial-error")
+        self.assertEqual(saved["messages"][0]["content"], "saved message")
+        self.assertEqual(writer.call_args.args[4][0]["conversationId"], "chat")
 
     def test_authenticated_user_is_not_fetched_again(self):
         conversation = {"id": "chat", "participantUserIds": [21, 99]}

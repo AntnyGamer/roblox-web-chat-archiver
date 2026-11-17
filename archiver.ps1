@@ -333,13 +333,25 @@ function Get-AllMessages {
     while ($true) {
         $query = @{ 'conversation_id' = $ConversationId }
         if ($cursor) { $query['cursor'] = $cursor }
-        $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query
+        try { $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query }
+        catch {
+            if ($all.Count -gt 0) {
+                $partialError = New-Object System.Exception($_.Exception.Message)
+                $partialError.Data['PartialMessages'] = $all.ToArray()
+                throw $partialError
+            }
+            throw
+        }
         $items = Get-ItemArray $data @('messages','Messages','items')
         foreach ($item in $items) { [void]$all.Add($item) }
 
         $next = Get-NextCursor $data
         if (-not $next) { break }
-        if ($seen.ContainsKey($next)) { throw "Roblox returned the same message cursor twice for conversation $ConversationId." }
+        if ($seen.ContainsKey($next)) {
+            $partialError = New-Object System.Exception("Roblox returned the same message cursor twice for conversation $ConversationId.")
+            $partialError.Data['PartialMessages'] = $all.ToArray()
+            throw $partialError
+        }
         $seen[$next] = $true
         $cursor = $next
     }
@@ -519,7 +531,12 @@ try {
             if ($conversationError -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') {
                 throw
             }
-            $archiveStatus = 'metadata-only-error'
+            $partial = $_.Exception.Data['PartialMessages']
+            if ($null -ne $partial -and @($partial).Count -gt 0) {
+                $messages = @($partial)
+                $archiveStatus = 'partial-error'
+            }
+            else { $archiveStatus = 'metadata-only-error' }
             $archiveError = $conversationError
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$conversationError })
         }
@@ -556,7 +573,7 @@ try {
         $normalized[$cid] = $outConvo
 
         if ($archiveError) {
-            Write-Host ("FAILED; metadata saved ({0})" -f $archiveError)
+            Write-Host ("FAILED; {0} messages saved ({1})" -f $outMessages.Count, $archiveError)
         }
         elseif (@($messages).Count -eq 0) {
             Write-Host '0 messages; metadata saved'
