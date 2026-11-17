@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$AppName = 'Roblox Web Chat Archiver v1.1.1 (2026 refresh)'
+$AppName = 'Roblox Web Chat Archiver v2.0.0 (2026 refresh)'
 $ChatBase = 'https://apis.roblox.com/platform-chat-api/v1'
 $UsersBase = 'https://users.roblox.com/v1'
 $MinRequestIntervalMs = 520
@@ -30,13 +30,13 @@ function Get-PropertyValue {
     if ($null -eq $Object) { return $Default }
     foreach ($name in $Names) {
         $prop = $Object.PSObject.Properties[$name]
-        if ($null -ne $prop) { return $prop.Value }
+        if ($null -ne $prop -and $null -ne $prop.Value) { return $prop.Value }
     }
     $dataProp = $Object.PSObject.Properties['data']
     if ($null -ne $dataProp -and $null -ne $dataProp.Value) {
         foreach ($name in $Names) {
             $prop = $dataProp.Value.PSObject.Properties[$name]
-            if ($null -ne $prop) { return $prop.Value }
+            if ($null -ne $prop -and $null -ne $prop.Value) { return $prop.Value }
         }
     }
     return $Default
