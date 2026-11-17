@@ -128,4 +128,33 @@ try {
     finally { Remove-Item Function:Move-Item -ErrorAction SilentlyContinue }
 }
 finally { Remove-Item -LiteralPath $backupTestDir -Recurse -Force -ErrorAction SilentlyContinue }
-Write-Host 'PASS: PowerShell syntax, final pages, cursor safeguards, and archive cleanup'
+$MaxRetries = 6
+$script:MalformedCalls = 0
+$script:UnexpectedSleeps = 0
+function Start-Sleep { $script:UnexpectedSleeps++ }
+function Invoke-RobloxRaw {
+    $script:MalformedCalls++
+    return [pscustomobject]@{ Content='{not valid json' }
+}
+function Invoke-WebRequest {
+    $script:MalformedCalls++
+    return [pscustomobject]@{ Content='{not valid json' }
+}
+try {
+    $authenticatedError = $false
+    try { $null = Invoke-RobloxJson -Url 'https://example.invalid/fixture' }
+    catch { $authenticatedError = $_.Exception.Message -match 'non-JSON' }
+    if (-not $authenticatedError -or $script:MalformedCalls -ne 1 -or $script:UnexpectedSleeps -ne 0) {
+        throw 'Authenticated malformed JSON must fail immediately without retrying'
+    }
+    $publicError = $false
+    try { $null = Invoke-PublicRobloxJson -Url 'https://example.invalid/fixture' }
+    catch { $publicError = $_.Exception.Message -match 'non-JSON' }
+    if (-not $publicError -or $script:MalformedCalls -ne 2 -or $script:UnexpectedSleeps -ne 0) {
+        throw 'Public malformed JSON must fail immediately without retrying'
+    }
+}
+finally {
+    Remove-Item Function:Invoke-RobloxRaw,Function:Invoke-WebRequest,Function:Start-Sleep -ErrorAction SilentlyContinue
+}
+Write-Host 'PASS: PowerShell syntax, paging, malformed JSON, and archive cleanup'

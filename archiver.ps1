@@ -202,10 +202,12 @@ function Invoke-RobloxJson {
             $response = Invoke-RobloxRaw -Url $Url -Method GET -Query $Query
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
-            return ($content | ConvertFrom-Json)
+            try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
+            catch { throw [System.FormatException]::new("Roblox returned non-JSON data from $Url.") }
         }
         catch {
             $lastError = $_.Exception
+            if ($lastError -is [System.FormatException]) { throw }
             $status = $null
             $body = ''
             $response = $_.Exception.Response
@@ -284,10 +286,12 @@ function Invoke-PublicRobloxJson {
             }
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
-            return ($content | ConvertFrom-Json)
+            try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
+            catch { throw [System.FormatException]::new("Roblox public API returned non-JSON data from $Url.") }
         }
         catch {
             $lastError = $_.Exception
+            if ($lastError -is [System.FormatException]) { throw }
             $status = $null
             $response = $_.Exception.Response
             if ($null -ne $response) { try { $status = [int]$response.StatusCode } catch {} }
