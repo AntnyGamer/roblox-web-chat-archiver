@@ -612,11 +612,12 @@ def main() -> int:
         print("Using .ROBLOSECURITY from the ROBLOSECURITY environment variable.")
     else:
         try:
-            cookie = _normalize_cookie(getpass.getpass("Paste your .ROBLOSECURITY value: "))
+            pasted = getpass.getpass("Paste your .ROBLOSECURITY value: ")
         except (EOFError, KeyboardInterrupt):
             raise
         except Exception as exc:
             raise ArchiverError("Could not open a hidden credential prompt in this terminal.") from exc
+        cookie = _normalize_cookie(pasted)
 
     _init_session(cookie)
     cookie = ""

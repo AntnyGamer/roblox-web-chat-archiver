@@ -32,6 +32,17 @@ class ArchiverTests(unittest.TestCase):
         with self.assertRaises(app.AuthenticationError):
             app._normalize_cookie("  ")
 
+    def test_empty_prompt_reports_missing_cookie_not_prompt_failure(self):
+        with patch.dict(app.os.environ, {"ROBLOSECURITY": ""}):
+            with patch.object(app.getpass, "getpass", return_value="   "):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(app.AuthenticationError, "No \\.ROBLOSECURITY value was entered"):
+                        app.main()
+            with patch.object(app.getpass, "getpass", side_effect=OSError("terminal unavailable")):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(app.ArchiverError, "hidden credential prompt"):
+                        app.main()
+
     def test_retry_after_is_bounded_and_handles_invalid_numbers(self):
         self.assertEqual(app._retry_wait("999999999", 4), 120.0)
         self.assertEqual(app._retry_wait("-8", 4, 2), 2)
