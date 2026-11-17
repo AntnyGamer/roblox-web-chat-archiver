@@ -1,4 +1,4 @@
-name: Publish v1.1.0 and verified ZIP
+name: Bootstrap verified v1.1.1 release
 
 on:
   push:
@@ -13,55 +13,36 @@ permissions:
   artifact-metadata: write
 
 jobs:
-  create-release:
-    if: github.event.head_commit.message == 'Bootstrap verified v1.1.0 release'
+  create-tag:
+    if: github.event.head_commit.message == 'Bootstrap verified v1.1.1 release'
     runs-on: ubuntu-latest
     steps:
-      - name: Verify this tag and release do not already exist
+      - name: Verify version is new and release commit exists
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: a0d03c8022c9ab6cf61fb5793478bb1c0743f17e
+          RELEASE_SHA: 43e88bf7301d8ab8ee6d9e047b85db57635f28cf
         run: |
           set -euo pipefail
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.0" >/dev/null 2>&1; then
-            echo "v1.1.0 tag already exists; refusing to overwrite it" >&2
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.1" >/dev/null 2>&1; then
+            echo "v1.1.1 already has a tag; refusing to overwrite" >&2
             exit 1
           fi
-          if gh release view v1.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v1.1.0 release already exists; refusing to overwrite it" >&2
+          if gh release view v1.1.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v1.1.1 already has a release; refusing to overwrite" >&2
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA" --jq '.sha' | grep -Fx "$RELEASE_SHA"
-      - name: Publish v1.1.0 from the verified merged code
+      - name: Create v1.1.1 tag at the reviewed release commit
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: a0d03c8022c9ab6cf61fb5793478bb1c0743f17e
+          RELEASE_SHA: 43e88bf7301d8ab8ee6d9e047b85db57635f28cf
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          ## Roblox Web Chat Archiver v1.1.0
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v1.1.1" -f sha="$RELEASE_SHA" >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.1" --jq '.object.sha')" = "$RELEASE_SHA"
 
-          - Preserve Roblox conversations with missing or null IDs instead of crashing; retain conversation metadata and embedded previews.
-          - Continue pagination and fetching available message history for conversations with valid IDs.
-          - Handle null or alternative cursor and preview fields safely.
-          - Show warnings for inaccessible or incomplete conversations in the local viewer.
-          - Improve archive reliability, authentication handling, and offline regression tests.
-          - Include a self-contained six-file ZIP with cryptographic build provenance.
-
-          **Important:** Roblox may not expose full history for conversations without a server ID. Such conversations are marked as incomplete rather than silently discarded.
-          NOTES
-          gh release create v1.1.0 --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "Roblox Web Chat Archiver v1.1.0" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
-      - name: Confirm release is published at the correct commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: a0d03c8022c9ab6cf61fb5793478bb1c0743f17e
-        run: |
-          set -euo pipefail
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.0" --jq '.object.sha')" = "$RELEASE_SHA"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v1.1.0" --jq '.draft')" = "false"
-
-  attach-release-zip:
-    needs: create-release
+  publish:
+    needs: create-tag
     permissions:
       contents: write
       id-token: write
@@ -69,4 +50,4 @@ jobs:
       artifact-metadata: write
     uses: ./.github/workflows/release.yml
     with:
-      release_tag: v1.1.0
+      release_tag: v1.1.1
