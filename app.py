@@ -16,7 +16,6 @@ import math
 import os
 from pathlib import Path
 import tempfile
-import sys
 import threading
 import time
 import traceback
@@ -103,11 +102,15 @@ def _retry_wait(value: str | None, fallback: float, minimum: float = 1.0) -> flo
     return min(120.0, max(minimum, seconds)) if math.isfinite(seconds) else fallback
 
 
-def _sleep_for_rate_limit() -> None:
-    global _last_request_at
-    delay = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
-    if delay > 0:
-        time.sleep(delay)
+def _check_archive_abort() -> None:
+    if _archive_abort.is_set():
+        raise AuthenticationError("Archive cancelled; cancelling remaining downloads.")
+
+
+def _wait_for_request(seconds: float) -> None:
+    # Wake throttled/retrying workers immediately when another download aborts.
+    _archive_abort.wait(seconds)
+    _check_archive_abort()
 
 
 def _init_session(cookie: str) -> None:
@@ -142,7 +145,10 @@ def _open(req: Request):
         raise ArchiverError("Roblox session was not initialized.")
     # One global throttle even when several conversations are downloading at once.
     with _pacing_lock:
-        _sleep_for_rate_limit()
+        _check_archive_abort()
+        delay = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+        if delay > 0:
+            _wait_for_request(delay)
         _last_request_at = time.monotonic()
     return _opener.open(req, timeout=REQUEST_TIMEOUT)
 
@@ -216,6 +222,7 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
     last_error: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
+        _check_archive_abort()
         # Capture the session generation so concurrent 401s share one refresh.
         session_epoch = _session_epoch
         try:
@@ -241,6 +248,7 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
             if exc.code == 401:
                 if attempt == 1:
                     with _refresh_lock:
+                        _check_archive_abort()
                         if _session_epoch != session_epoch:
                             # Another worker already refreshed the shared cookie jar.
                             continue
@@ -262,12 +270,12 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
             if exc.code == 429 and attempt < MAX_RETRIES:
                 wait = _retry_wait(exc.headers.get("Retry-After"), min(30.0, 2 ** attempt), 2.0)
                 print(f"\nRate limited by Roblox; retrying after {wait:g}s...", flush=True)
-                time.sleep(wait)
+                _wait_for_request(wait)
                 continue
             if 500 <= exc.code <= 599 and attempt < MAX_RETRIES:
                 wait = min(20.0, 2 ** (attempt - 1))
                 print(f"\nRoblox API returned HTTP {exc.code}; retrying in {wait:g}s...", flush=True)
-                time.sleep(wait)
+                _wait_for_request(wait)
                 continue
             raise ArchiverError(f"Roblox API error HTTP {exc.code}: {detail} ({url})") from exc
         except OSError as exc:
@@ -276,7 +284,7 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
                 break
             wait = min(20.0, 2 ** (attempt - 1))
             print(f"\nNetwork error; retrying in {wait:g}s...", flush=True)
-            time.sleep(wait)
+            _wait_for_request(wait)
 
     raise ArchiverError(f"Could not reach Roblox after {MAX_RETRIES} attempts: {last_error}")
 
@@ -360,6 +368,14 @@ def _preview_message(convo: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(candidate, dict) and candidate:
             return candidate
     return None
+
+
+def _available_messages(convo: dict[str, Any]) -> list[dict[str, Any]]:
+    embedded = convo.get("messages")
+    if isinstance(embedded, list) and embedded and all(isinstance(m, dict) for m in embedded):
+        return embedded
+    preview = _preview_message(convo)
+    return [preview] if preview is not None else []
 
 
 def _message_sender_id(message: dict[str, Any]) -> int | None:
@@ -583,8 +599,7 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
     seen_cursors: set[str] = set()
 
     while True:
-        if _archive_abort.is_set():
-            raise AuthenticationError("Another conversation request failed authentication; cancelling remaining downloads.")
+        _check_archive_abort()
         try:
             data = request_json(
                 f"{CHAT_BASE}/get-conversation-messages",
@@ -786,6 +801,7 @@ def write_archive(
 
 
 def main() -> int:
+    _archive_abort.clear()
     print("=" * 62)
     print(APP_NAME)
     print("=" * 62)
@@ -834,7 +850,6 @@ def main() -> int:
     failures: list[dict[str, str]] = []
 
     total = len(raw_conversations)
-    _archive_abort.clear()
     # Fetch independent conversations concurrently while spacing every authenticated
     # request at the same global rate as sequential mode.
     pool = ThreadPoolExecutor(max_workers=MAX_CHAT_WORKERS)
@@ -857,21 +872,13 @@ def main() -> int:
             missing_id = _conversation_id(raw_convo) is None
             if missing_id:
                 error = "Roblox returned this conversation without an ID; full message history cannot be requested."
-                embedded = raw_convo.get("messages")
-                messages = embedded if isinstance(embedded, list) and all(isinstance(m, dict) for m in embedded) else []
-                if not messages:
-                    preview = _preview_message(raw_convo)
-                    if preview is not None:
-                        messages = [preview]
+                messages = _available_messages(raw_convo)
                 failures.append({"conversationId": cid, "title": str(title), "error": error})
                 status = "missing-id"
             else:
                 try:
-                    messages = message_futures[cid].result()
+                    messages = message_futures.pop(cid).result()
                 except AuthenticationError:
-                    _archive_abort.set()
-                    for future in message_futures.values():
-                        future.cancel()
                     raise
                 except ArchiverError as exc:
                     error = str(exc)
@@ -881,9 +888,8 @@ def main() -> int:
                     "metadata-only-empty-response" if not messages else None
                 )
                 if not messages:
-                    preview = _preview_message(raw_convo)
-                    if preview is not None:
-                        messages = [preview]
+                    messages = _available_messages(raw_convo)
+                    if messages:
                         status = "preview-only"
             normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status, archive_error=error)
             normalized_conversations[cid] = normalized
@@ -903,11 +909,12 @@ def main() -> int:
             else:
                 print("0 messages; metadata saved")
 
+    except BaseException:
+        _archive_abort.set()
+        for future in message_futures.values():
+            future.cancel()
+        raise
     finally:
-        if sys.exc_info()[0] is not None:
-            _archive_abort.set()
-            for future in message_futures.values():
-                future.cancel()
         pool.shutdown(wait=True)
 
     # Conversation metadata already includes many complete user profiles.
@@ -971,3 +978,4 @@ if __name__ == "__main__":
         print(f"\nA diagnostic traceback was written to: {error_path}")
         print("The diagnostic file does NOT contain the cookie value.")
         raise SystemExit(1)
+

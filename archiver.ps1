@@ -1,4 +1,4 @@
-﻿# Roblox Web Chat Archiver - 2026 compatibility refresh
+# Roblox Web Chat Archiver - 2026 compatibility refresh
 # Windows PowerShell 5.1+ compatible; no third-party modules required.
 
 $ErrorActionPreference = 'Stop'
@@ -349,6 +349,17 @@ function Get-PreviewMessage {
     return $null
 }
 
+function Get-AvailableMessages {
+    param($Convo)
+    $embedded = @(Get-ItemArray $Convo @('messages'))
+    if ($embedded.Count -gt 0 -and
+        @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
+        return $embedded
+    }
+    $preview = Get-PreviewMessage $Convo
+    if ($null -ne $preview) { return $preview }
+}
+
 function Merge-MetadataValues {
     param($Old, $New, [string]$Field = '')
     if ($null -eq $New) { return $Old }
@@ -395,7 +406,7 @@ function Merge-MetadataValues {
             $unique = New-Object System.Collections.ArrayList
             foreach ($member in $Old) { [void]$unique.Add($member) }
             foreach ($member in $New) {
-                if ($member -notin @($unique.ToArray())) { [void]$unique.Add($member) }
+                if ($member -notin $unique) { [void]$unique.Add($member) }
             }
             return ,@($unique.ToArray())
         }
@@ -790,14 +801,7 @@ try {
         if (-not (Get-ConversationId $convo)) {
             $archiveStatus = 'missing-id'
             $archiveError = 'Roblox returned this conversation without an ID; full message history cannot be requested.'
-            $embedded = Get-PropertyValue $convo @('messages') @()
-            if ($embedded -is [array] -and @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
-                $messages = @($embedded)
-            }
-            if (@($messages).Count -eq 0) {
-                $preview = Get-PreviewMessage $convo
-                if ($null -ne $preview) { $messages = @($preview) }
-            }
+            $messages = @(Get-AvailableMessages $convo)
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$archiveError })
         }
         else {
@@ -824,9 +828,8 @@ try {
             $archiveStatus = 'metadata-only-empty-response'
         }
         if ($archiveStatus -in @('metadata-only-error','metadata-only-empty-response')) {
-            $preview = Get-PreviewMessage $convo
-            if ($null -ne $preview) {
-                $messages = @($preview)
+            $messages = @(Get-AvailableMessages $convo)
+            if ($messages.Count -gt 0) {
                 $archiveStatus = 'preview-only'
             }
         }
@@ -948,3 +951,4 @@ finally {
     $script:CsrfToken = $null
     $script:WebSession = $null
 }
+

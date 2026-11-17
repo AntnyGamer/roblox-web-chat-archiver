@@ -131,4 +131,19 @@ context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conv
 }})});
 context.openConversation('big',root.children[0]);
 assert.equal(document.getElementById('messages').children[0].children[1].textContent,'earlier');
+// Sorting must parse conversation metadata once, rather than on every comparison.
+vm.runInContext(`
+  const originalParseDate=parseDate;
+  let metadataParses=0;
+  parseDate=value=>{metadataParses++;return originalParseDate(value);};
+`,context);
+const many=Object.fromEntries(Array.from({length:200},(_,i)=>['c'+i,{
+ title:'Conversation '+i,messages:[],updated_at:new Date(1700000000000+((i*97)%200)*1000).toISOString(),created_at:'2020-01-01'
+}]));
+context.loadArchive({text:JSON.stringify({people:{},conversations:many})});
+assert.equal(vm.runInContext('metadataParses',context),400,
+ 'each of the two activity metadata fields should be parsed once per conversation');
+assert.equal(root.children[0].dataset.id,'c167','activity ordering must remain descending');
+vm.runInContext('parseDate=originalParseDate',context);
 console.log('PASS: viewer search reuses DOM, preserves selection and delegates clicks; invalid imports are atomic; timestamps are cached');
+

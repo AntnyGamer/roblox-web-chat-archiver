@@ -2,6 +2,8 @@
 
 This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
+This revised distribution keeps application version **v2.0.0** and uses release tag **`v2.0.0-r2`**. The original `v2.0.0` tag is unchanged.
+
 Roblox changed `.ROBLOSECURITY` rotation behavior in 2026. This refresh uses a real cookie session, accepts Roblox `Set-Cookie` rotations, and calls Roblox's session refresh endpoint before archiving. If Roblox still returns HTTP 401, re-copy the current `.ROBLOSECURITY` value from the logged-in Roblox tab and run it again; an already-invalid session cannot be recovered by the archiver.
 
 ## Windows: easiest way
@@ -41,12 +43,13 @@ For Chrome or Microsoft Edge:
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;
 - Paces authenticated requests to reduce the chance of hitting Roblox's cookie-API rate limits;
 - Requests 30 items per page on conversation and message endpoints to reduce API calls and includes user data in conversation-list requests;
-- Cancels queued Python downloads if authentication expires or the archiver is interrupted;
+- Cancels queued Python downloads and wakes retry/pacing waits if authentication expires or the archiver is interrupted;
+- Releases consumed Python download results after normalization to reduce memory usage;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
 - Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
-- Preserves the available message preview when a known-ID conversation returns an empty page or its message-history request fails, and labels it as **preview-only** rather than implying that the full chat was retrieved;
+- Preserves available embedded messages or a message preview when a known-ID conversation returns an empty page or its message-history request fails, and labels these as **preview-only** rather than implying that the full chat was retrieved;
 - Marks preview-only conversations separately in archive statistics;
 - Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
 - Keeps conversation metadata and any embedded message previews when Roblox returns a conversation without an ID, flags its history as incomplete, and continues with other conversations;
@@ -77,3 +80,4 @@ The archive also records metadata-only conversations and message-fetch failures 
 ## API limitation
 
 This refresh targets the current `apis.roblox.com/platform-chat-api/v1` endpoints used by the latest version of the original project. These are Roblox-controlled web APIs and can change without notice. If Roblox removes historical platform-chat access server-side, a client-side archiver cannot recover data Roblox no longer exposes.
+

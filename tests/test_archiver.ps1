@@ -21,6 +21,27 @@ if ((Get-PropertyValue ([pscustomobject]@{ hasVerifiedBadge=$false }) @('hasVeri
     throw 'False-valued fields must not be treated as null'
 }
 $ChatBase = 'https://example.invalid/fixture'
+$available = @(Get-AvailableMessages ([pscustomobject]@{
+    messages=@([pscustomobject]@{ id='a'; content='embedded A' }, [pscustomobject]@{ id='b'; content='embedded B' })
+    preview_message=[pscustomobject]@{ content='preview' }
+}))
+if ($available.Count -ne 2 -or $available[1].content -ne 'embedded B') {
+    throw 'Available embedded messages must survive unavailable history, in their original order'
+}
+$available = @(Get-AvailableMessages ([pscustomobject]@{
+    messages=@([pscustomobject]@{ id='single'; content='single embedded message' })
+}))
+if ($available.Count -ne 1 -or $available[0].content -ne 'single embedded message') {
+    throw 'A single embedded message must not be unwrapped and discarded'
+}
+$available = @(Get-AvailableMessages ([pscustomobject]@{
+    messages=@('invalid'); preview_message=[pscustomobject]@{ content='preview fallback' }
+}))
+if ($available.Count -ne 1 -or $available[0].content -ne 'preview fallback') {
+    throw 'Invalid embedded messages must use the available preview'
+}
+$members = Merge-MetadataValues -Old @(1,2,2) -New @(2,3,1,4) -Field 'participantUserIds'
+if (($members -join ',') -ne '1,2,2,3,4') { throw 'Participant union changed its order or equality behavior' }
 $fixture = Get-Content (Join-Path $PSScriptRoot 'fixtures\pagination.json') -Raw | ConvertFrom-Json
 $script:Responses = @($fixture.conversations)
 $script:ResponseIndex = 0
@@ -340,3 +361,4 @@ finally {
     Remove-Item Function:Invoke-RobloxRaw,Function:Invoke-WebRequest,Function:Start-Sleep -ErrorAction SilentlyContinue
 }
 Write-Host 'PASS: PowerShell syntax, paging, malformed JSON, and archive cleanup'
+

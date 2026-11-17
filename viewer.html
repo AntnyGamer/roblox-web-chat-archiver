@@ -143,7 +143,9 @@ function loadArchive(file){
         parseDate(convo.updated_at ?? convo.updatedAt)?.getTime()??0,
         parseDate(convo.created_at ?? convo.createdAt)?.getTime()??0
       );
-      entries.sort((a,b)=>activity(b[1])-activity(a[1]));
+      // Compute each activity once, including metadata-only conversations.
+      const activities=new Map(entries.map(([,convo])=>[convo,activity(convo)]));
+      entries.sort((a,b)=>activities.get(b[1])-activities.get(a[1]));
       archive=loaded;conversationEntries=entries;
       const me=personFor(archive.userId);
       $("accountName").textContent=me ? (me.name || me.displayName || `User ${archive.userId}`) : `User ${archive.userId ?? "?"}`;
@@ -172,3 +174,4 @@ $("back").addEventListener("click",()=>$("sidebar").classList.remove("hide-mobil
 </script>
 </body>
 </html>
+

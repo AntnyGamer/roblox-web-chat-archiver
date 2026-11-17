@@ -1,6 +1,7 @@
 """Network-free regression tests for the Roblox archive format and paging logic."""
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
+import gc
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
@@ -56,9 +58,96 @@ class ArchiverTests(unittest.TestCase):
         denied = HTTPError("https://apis.roblox.com/test", 429, "Rate limited",
                            {"Retry-After": "100000"}, io.BytesIO(b'{}'))
         with patch.object(app, "_open", side_effect=[denied, io.BytesIO(b'{"ok":true}')]):
-            with patch.object(app.time, "sleep") as sleep:
+            with patch.object(app._archive_abort, "wait", return_value=False) as sleep:
                 self.assertEqual(app.request_json("https://apis.roblox.com/test"), {"ok": True})
         sleep.assert_called_once_with(120.0)
+
+    def test_cancel_wakes_authenticated_retry_waits_without_another_request(self):
+        for error in (
+            HTTPError("https://apis.roblox.com/test", 429, "Limited", {"Retry-After": "120"}, io.BytesIO(b"{}")),
+            HTTPError("https://apis.roblox.com/test", 503, "Unavailable", {}, io.BytesIO(b"{}")),
+            URLError("offline"),
+        ):
+            with self.subTest(error=error):
+                app._archive_abort.clear()
+                entered = threading.Event()
+                wait = app._archive_abort.wait
+
+                def retry_wait(seconds):
+                    entered.set()
+                    return wait(seconds)
+
+                try:
+                    with patch.object(app, "_open", side_effect=error) as request, \
+                         patch.object(app._archive_abort, "wait", side_effect=retry_wait), \
+                         contextlib.redirect_stdout(io.StringIO()), \
+                         ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(app.fetch_all_messages, "chat")
+                        waiting = entered.wait(2)
+                        app._archive_abort.set()
+                        self.assertTrue(waiting, "The request never reached its retry wait")
+                        with self.assertRaises(app.AuthenticationError):
+                            future.result(timeout=2)
+                        self.assertEqual(request.call_count, 1)
+                finally:
+                    app._archive_abort.clear()
+
+    def test_cancel_during_pacing_prevents_transport_request(self):
+        app._archive_abort.clear()
+        entered = threading.Event()
+        wait = app._archive_abort.wait
+
+        def pacing_wait(seconds):
+            entered.set()
+            return wait(seconds)
+
+        try:
+            with patch.object(app, "_opener") as opener, \
+                 patch.object(app, "_last_request_at", time.monotonic()), \
+                 patch.object(app, "MIN_REQUEST_INTERVAL", 30), \
+                 patch.object(app._archive_abort, "wait", side_effect=pacing_wait), \
+                 ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(app._open, None)
+                waiting = entered.wait(2)
+                app._archive_abort.set()
+                self.assertTrue(waiting)
+                with self.assertRaises(app.AuthenticationError):
+                    future.result(timeout=2)
+                opener.open.assert_not_called()
+        finally:
+            app._archive_abort.clear()
+
+    def test_consumed_download_results_are_released_before_saving(self):
+        class Messages(list):
+            pass
+
+        references = []
+
+        def fetch(cid):
+            messages = Messages([{"id": cid, "content": "preserved"}])
+            references.append(weakref.ref(messages))
+            return messages
+
+        def save(output, user, people, conversations, failures, **kwargs):
+            gc.collect()
+            self.assertLessEqual(sum(ref() is not None for ref in references), 1,
+                                 "Consumed futures retained raw message collections")
+            self.assertEqual(len(conversations), 12)
+            self.assertTrue(all(c["messages"][0]["content"] == "preserved" for c in conversations.values()))
+            return Path("unused.json")
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={
+                str(i): {"id": str(i)} for i in range(12)}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", side_effect=fetch))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            stack.enter_context(patch.object(app, "write_archive", side_effect=save))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
 
     def test_concurrent_downloads_share_one_rate_limit(self):
         starts = []
@@ -569,10 +658,12 @@ class ArchiverTests(unittest.TestCase):
         raw = {
             "empty": {"id": "empty", "preview_message": {"id": "preview-a", "content": "A"}},
             "failed": {"id": "failed", "previewMessage": {"id": "preview-b", "content": "B"}},
+            "embedded": {"id": "embedded", "messages": [{"id": "saved", "content": "C"}]},
+            "embedded-failed": {"id": "embedded-failed", "messages": [{"id": "saved-2", "content": "D"}]},
         }
 
         def fetch(cid):
-            if cid == "failed":
+            if cid in ("failed", "embedded-failed"):
                 raise app.ArchiverError("Roblox returned an error")
             return []
 
@@ -593,11 +684,15 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(conversations["failed"]["_archiveStatus"], "preview-only")
         self.assertEqual(conversations["failed"]["messages"][0]["content"], "B")
         self.assertEqual(conversations["failed"]["_archiveError"], "Roblox returned an error")
+        self.assertEqual(conversations["embedded"]["_archiveStatus"], "preview-only")
+        self.assertEqual(conversations["embedded"]["messages"][0]["content"], "C")
+        self.assertEqual(conversations["embedded-failed"]["messages"][0]["content"], "D")
+        self.assertEqual(conversations["embedded-failed"]["_archiveError"], "Roblox returned an error")
         with tempfile.TemporaryDirectory() as folder:
             archive_path = app.write_archive(Path(folder), {"id": 21, "name": "Me"},
                                              {}, conversations, [])
             record = json.loads(archive_path.read_text(encoding="utf-8"))
-        self.assertEqual(record["archiveMeta"]["previewOnlyConversations"], 2)
+        self.assertEqual(record["archiveMeta"]["previewOnlyConversations"], 4)
         self.assertEqual(writer.call_args.args[4][0]["conversationId"], "failed")
 
     def test_interrupted_export_cancels_pending_requests(self):
@@ -713,3 +808,4 @@ class ArchiverTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
