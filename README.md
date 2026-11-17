@@ -1,4 +1,4 @@
-# Roblox web chat archiver — v1.1.0 (2026 compatibility refresh)
+# Roblox web chat archiver — v1.1.1 (2026 compatibility refresh)
 
 This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
