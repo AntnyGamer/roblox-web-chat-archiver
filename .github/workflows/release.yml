@@ -3,6 +3,12 @@ name: Publish release ZIP
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Tag to package when called by another workflow'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
           persist-credentials: false
       - name: Test Windows PowerShell archiver offline
         shell: powershell
@@ -28,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -43,7 +49,7 @@ jobs:
       - name: Build exactly the six distribution files
         id: package
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
           python - <<'PY'
           import os
@@ -75,6 +81,6 @@ jobs:
       - name: Upload ZIP asset to the published GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
           RELEASE_ZIP: ${{ steps.package.outputs.path }}
         run: gh release upload "$RELEASE_TAG" "$RELEASE_ZIP" --clobber
