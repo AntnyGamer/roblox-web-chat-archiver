@@ -74,6 +74,22 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].args[1]["cursor"], "page-2")
         self.assertTrue(all(call.args[1]["pageSize"] == 30 for call in request.call_args_list))
 
+    def test_partial_conversation_list_is_retained_after_later_page_failure(self):
+        pages = [{"conversations": [{"id": "saved"}], "nextCursor": "next"},
+                 {"error": "broken page"}]
+        with patch.object(app, "request_json", side_effect=pages):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(app.PartialConversationsError) as caught:
+                    app.fetch_all_conversations()
+        self.assertEqual(list(caught.exception.conversations), ["saved"])
+        self.assertIn("Malformed Roblox page", str(caught.exception))
+
+    def test_missing_conversation_id_is_not_silently_dropped(self):
+        with patch.object(app, "request_json", return_value={"conversations": [{}]}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(app.ArchiverError, "valid ID"):
+                    app.fetch_all_conversations()
+
     def test_repeated_conversation_cursor_fails_closed(self):
         pages = [{"conversations": [], "nextCursor": "same"},
                  {"conversations": [], "nextCursor": "same"}]
@@ -193,6 +209,30 @@ class ArchiverTests(unittest.TestCase):
             self.assertFalse(result.with_suffix(result.suffix + ".tmp").exists())
             self.assertEqual(archive["archiveMeta"]["failedConversations"][0]["error"], "transient error")
             self.assertEqual(archive["conversations"]["first"]["messages"][0]["content"], "hello")
+
+    def test_main_saves_partial_conversation_list_and_marks_archive(self):
+        conversation = {"id": "partial", "name": "Only known"}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            for name in ("_init_session", "refresh_session"):
+                stack.enter_context(patch.object(app, name))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", side_effect=app.PartialConversationsError(
+                "pagination failed", {"partial": conversation})))
+            stack.enter_context(patch.object(app, "fetch_all_messages", return_value=[{"content": "retained"}]))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        self.assertEqual(writer.call_args.args[3]["partial"]["messages"][0]["content"], "retained")
+        self.assertEqual(writer.call_args.kwargs["conversation_list_error"], "pagination failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = app.write_archive(Path(directory), {"id": 7, "name": "Example"}, {},
+                {"partial": {"messages": [{"content": "retained"}]}}, [], conversation_list_error="pagination failed")
+            payload = json.loads(result.read_text(encoding="utf-8"))
+        self.assertTrue(payload["archiveMeta"]["conversationListIncomplete"])
+        self.assertEqual(payload["archiveMeta"]["conversationListError"], "pagination failed")
 
     def test_main_saves_partial_messages_and_marks_failure(self):
         conversation = {"id": "chat", "name": "Somebody"}

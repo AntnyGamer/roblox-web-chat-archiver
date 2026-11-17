@@ -148,7 +148,8 @@ function loadArchive(file){
       const me=personFor(archive.userId);
       $("accountName").textContent=me ? (me.name || me.displayName || `User ${archive.userId}`) : `User ${archive.userId ?? "?"}`;
       const msgCount=conversationEntries.reduce((n,[,c])=>n+(Array.isArray(c.messages)?c.messages.length:0),0);
-      $("stats").textContent=`${conversationEntries.length.toLocaleString()} conversations • ${msgCount.toLocaleString()} messages`;
+      $("stats").textContent=`${conversationEntries.length.toLocaleString()} conversations • ${msgCount.toLocaleString()} messages`+
+        (archive.archiveMeta?.conversationListIncomplete?" • ⚠ Incomplete conversation list":"");
       $("welcome").classList.add("hidden"); $("app").classList.remove("hidden"); $("sidebar").classList.remove("hide-mobile");
       $("chatTitle").textContent="Select a conversation"; $("messages").innerHTML='<div class="empty">Choose a conversation on the left.</div>';
       $("search").value=""; buildConversationList(); renderConversationList();

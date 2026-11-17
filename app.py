@@ -42,6 +42,12 @@ class AuthenticationError(ArchiverError):
     pass
 
 
+class PartialConversationsError(ArchiverError):
+    def __init__(self, message: str, conversations: dict[str, dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.conversations = conversations
+
+
 class PartialMessagesError(ArchiverError):
     def __init__(self, message: str, messages: list[dict[str, Any]]) -> None:
         super().__init__(message)
@@ -399,21 +405,25 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
 
     while True:
         page += 1
-        data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor, "pageSize": 30})
-        items = _first_list(data, "conversations", "Conversations", "items", required=True)
-        if any(not isinstance(item, dict) for item in items):
-            raise ArchiverError("Malformed Roblox conversation page: items must be objects.")
-        for item in items:
-            cid = _conversation_id(item)
-            if cid:
-                conversations[cid] = item
+        try:
+            data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor, "pageSize": 30})
+            items = _first_list(data, "conversations", "Conversations", "items", required=True)
+            if any(not isinstance(item, dict) or not _conversation_id(item) for item in items):
+                raise ArchiverError("Malformed Roblox conversation page: items require a valid ID.")
+            for item in items:
+                conversations[_conversation_id(item)] = item
+            next_cursor = _next_cursor(data)
+            if next_cursor in seen_cursors:
+                raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
+        except AuthenticationError:
+            raise
+        except ArchiverError as exc:
+            if conversations:
+                raise PartialConversationsError(str(exc), conversations) from exc
+            raise
         print(f"  conversations page {page}: +{len(items)} (total {len(conversations)})", flush=True)
-
-        next_cursor = _next_cursor(data)
         if not next_cursor:
             break
-        if next_cursor in seen_cursors:
-            raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
         seen_cursors.add(next_cursor)
         cursor = next_cursor
 
@@ -548,6 +558,7 @@ def write_archive(
     people: dict[str, dict[str, Any]],
     conversations: dict[str, dict[str, Any]],
     failures: list[dict[str, str]],
+    conversation_list_error: str | None = None,
 ) -> Path:
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = "".join(c for c in str(current_user.get("name", "user")) if c.isalnum() or c in "-_ ").strip() or "user"
@@ -566,6 +577,10 @@ def write_archive(
             "failedConversations": failures,
         },
     }
+
+    if conversation_list_error:
+        payload["archiveMeta"]["conversationListIncomplete"] = True
+        payload["archiveMeta"]["conversationListError"] = conversation_list_error
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -607,7 +622,13 @@ def main() -> int:
 
     print(f"Logged in as {current_user.get('name', 'Unknown')} (ID {current_user['id']}).")
     print("\nFetching conversations...", flush=True)
-    raw_conversations = fetch_all_conversations()
+    conversation_list_error = None
+    try:
+        raw_conversations = fetch_all_conversations()
+    except PartialConversationsError as exc:
+        raw_conversations = exc.conversations
+        conversation_list_error = str(exc)
+        print(f"WARNING: Conversation list is incomplete ({exc}).", flush=True)
     print(f"Found {len(raw_conversations)} conversations.\n")
 
     normalized_conversations: dict[str, dict[str, Any]] = {}
@@ -674,7 +695,8 @@ def main() -> int:
         "targetId": 0,
     }
 
-    archive_path = write_archive(Path.cwd(), current_user, people, normalized_conversations, failures)
+    archive_path = write_archive(Path.cwd(), current_user, people, normalized_conversations, failures,
+                                 conversation_list_error=conversation_list_error)
     total_messages = sum(len(c.get("messages", [])) for c in normalized_conversations.values())
     metadata_only = sum(1 for c in normalized_conversations.values() if not c.get("messages"))
 
@@ -686,6 +708,8 @@ def main() -> int:
         print(f"Metadata-only conversations: {metadata_only}")
     if failures:
         print(f"WARNING: {len(failures)} conversation(s) had message-fetch errors; their metadata was still saved.")
+    if conversation_list_error:
+        print("WARNING: The archive contains only conversations discovered before the list failed.")
 
     return 0
 

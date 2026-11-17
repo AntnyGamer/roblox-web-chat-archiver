@@ -29,6 +29,20 @@ $script:ResponseIndex = 0
 $messages = @(Get-AllMessages -ConversationId 'first')
 if ($messages.Count -ne 2 -or $messages[1].content -ne 'last message') { throw 'Final message page was dropped' }
 if ($script:LastQuery.pageSize -ne 30) { throw 'Message requests must ask for 30 items per page' }
+$script:Responses = @([pscustomobject]@{ conversations=@([pscustomobject]@{ id='saved-chat' }); nextCursor='next' }, [pscustomobject]@{ error='bad page' })
+$script:ResponseIndex = 0
+$partialList = $false
+try { $null = Get-AllConversations }
+catch {
+    $partial = $_.Exception.Data['PartialConversations']
+    $partialList = $_.Exception.Message -match 'Malformed Roblox page' -and $null -ne $partial -and $partial.Contains('saved-chat')
+}
+if (-not $partialList) { throw 'Later conversation-list failures must preserve earlier conversation IDs' }
+$script:Responses = @([pscustomobject]@{ conversations=@([pscustomobject]@{ name='missing ID' }) })
+$script:ResponseIndex = 0
+$missingIdRejected = $false
+try { $null = Get-AllConversations } catch { $missingIdRejected = $_.Exception.Message -match 'valid ID' }
+if (-not $missingIdRejected) { throw 'Conversation records without IDs must not be silently skipped' }
 $script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
 $script:ResponseIndex = 0
 $partialSaved = $false

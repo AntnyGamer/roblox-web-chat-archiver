@@ -84,7 +84,8 @@ for(const invalid of [
  assert.equal(root.children[0].dataset.id,'first','invalid imports must not replace visible conversation rows');
 }
 assert.equal(alerts.length,5,'invalid archive imports must report failure');
-context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',messages:[]}}})});
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',messages:[]}},archiveMeta:{conversationListIncomplete:true}})});
+assert.match(document.getElementById('stats').textContent,/Incomplete conversation list/,'partial conversation archives need a visible warning');
 assert.equal(root.children.length,2,'valid replacement archive resets the visible conversation list');
 assert.equal(root.children[0].dataset.id,'third');
 assert.equal(vm.runInContext('archive.conversations.third.title',context),'New archive');

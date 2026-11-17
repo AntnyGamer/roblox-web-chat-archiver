@@ -39,6 +39,7 @@ For Chrome or Microsoft Edge:
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
 - Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
+- Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
 - Records metadata-only and failed conversation information in `archiveMeta` so archive completeness is easier to understand;
 - Never writes the `.ROBLOSECURITY` value to the archive and redacts it from PowerShell diagnostics if it is still present during an early failure;
 - Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);

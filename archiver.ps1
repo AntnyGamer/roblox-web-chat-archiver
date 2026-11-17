@@ -325,20 +325,32 @@ function Get-AllConversations {
         $page++
         $query = @{ 'pageSize' = 30 }
         if ($cursor) { $query['cursor'] = $cursor }
-        $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
-        $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
-        foreach ($item in $items) {
-            if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array]) {
-                throw 'Malformed Roblox conversation page: items must be objects.'
+        try {
+            $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
+            $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
+            foreach ($item in $items) {
+                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array] -or
+                    -not (Get-ConversationId $item)) {
+                    throw 'Malformed Roblox conversation page: items require a valid ID.'
+                }
             }
-            $cid = Get-ConversationId $item
-            if ($cid) { $result[$cid] = $item }
+            foreach ($item in $items) { $result[(Get-ConversationId $item)] = $item }
+            $next = Get-NextCursor $data
+            if ($next -and $seen.ContainsKey($next)) {
+                throw 'Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.'
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') { throw }
+            if ($result.Count -gt 0) {
+                $partialError = New-Object System.Exception($_.Exception.Message)
+                $partialError.Data['PartialConversations'] = $result
+                throw $partialError
+            }
+            throw
         }
         Write-Host ("  conversations page {0}: +{1} (total {2})" -f $page, $items.Count, $result.Count)
-
-        $next = Get-NextCursor $data
         if (-not $next) { break }
-        if ($seen.ContainsKey($next)) { throw 'Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.' }
         $seen[$next] = $true
         $cursor = $next
     }
@@ -528,7 +540,15 @@ try {
     Write-Host "Logged in as $myName (ID $myId)."
 
     Write-Host "`nFetching conversations..."
-    $rawConversations = Get-AllConversations
+    $conversationListError = $null
+    try { $rawConversations = Get-AllConversations }
+    catch {
+        $partial = $_.Exception.Data['PartialConversations']
+        if ($null -eq $partial -or $partial.Count -eq 0) { throw }
+        $rawConversations = $partial
+        $conversationListError = $_.Exception.Message
+        Write-Host ("WARNING: Conversation list is incomplete ({0})." -f $conversationListError) -ForegroundColor Yellow
+    }
     Write-Host ("Found {0} conversations.`n" -f $rawConversations.Count)
 
     $normalized = [ordered]@{}
@@ -646,6 +666,10 @@ try {
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}.json" -f $myId, $safeName, $stamp)
     $tmp = $path + '.tmp'
+    if ($conversationListError) {
+        $payload.archiveMeta['conversationListIncomplete'] = $true
+        $payload.archiveMeta['conversationListError'] = $conversationListError
+    }
     $json = $payload | ConvertTo-Json -Depth 100
     [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $tmp -Destination $path -Force
@@ -658,6 +682,7 @@ try {
     if ($failures.Count -gt 0) {
         Write-Host ("WARNING: {0} conversation(s) had message-fetch errors; their metadata was still saved." -f $failures.Count)
     }
+    if ($conversationListError) { Write-Host 'WARNING: Only conversations discovered before the list failure were archived.' -ForegroundColor Yellow }
 }
 catch {
     $errorPath = Join-Path (Get-Location) 'archiver-error.txt'
