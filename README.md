@@ -28,6 +28,8 @@ For Chrome or Microsoft Edge:
 ## Changes from the archived version
 
 - Fixed conversation and message pagination so the **final page is no longer discarded**;
+- Validates API page structures instead of silently interpreting malformed responses as empty archives;
+- Supports nested user-lookup results without unnecessary per-user fallback requests;
 - Updated authentication for Roblox's current `.ROBLOSECURITY` rotation behavior by using a real cookie session and accepting rotated cookies;
 - Refreshes the Roblox session when appropriate and gives clearer 401/403 authentication errors;
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;

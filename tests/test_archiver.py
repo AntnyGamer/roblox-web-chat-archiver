@@ -67,6 +67,40 @@ class ArchiverTests(unittest.TestCase):
                 with self.assertRaisesRegex(app.ArchiverError, "cursor"):
                     app.fetch_all_conversations()
 
+    def test_conversation_page_requires_a_real_array(self):
+        for page in ({"error": "temporary failure"}, {"conversations": None},
+                     {"conversations": {"items": []}}):
+            with self.subTest(page=page), patch.object(app, "request_json", return_value=page):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(app.ArchiverError, "Malformed Roblox page"):
+                        app.fetch_all_conversations()
+
+    def test_nested_conversation_items_are_accepted(self):
+        with patch.object(app, "request_json", return_value={
+            "data": {"conversations": [{"id": "chat"}]}}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(set(app.fetch_all_conversations()), {"chat"})
+
+    def test_invalid_later_page_retains_earlier_messages(self):
+        pages = [{"messages": [{"content": "saved"}], "nextCursor": "page-2"},
+                 {"message": "temporary failure"}]
+        with patch.object(app, "request_json", side_effect=pages):
+            with self.assertRaisesRegex(app.PartialMessagesError, "Malformed Roblox page") as caught:
+                app.fetch_all_messages("chat")
+        self.assertEqual(caught.exception.messages, [{"content": "saved"}])
+        with patch.object(app, "request_json", return_value={"messages": None}):
+            with self.assertRaises(app.ArchiverError) as first:
+                app.fetch_all_messages("chat")
+        self.assertNotIsInstance(first.exception, app.PartialMessagesError)
+
+    def test_nested_batch_users_avoid_redundant_individual_calls(self):
+        with patch.object(app, "request_public_json", return_value={
+            "data": {"users": [{"id": 89, "name": "Found"}]}}) as request:
+            with contextlib.redirect_stdout(io.StringIO()):
+                people = app.resolve_users_batch([89])
+        self.assertEqual(people["89"]["name"], "Found")
+        self.assertEqual(request.call_count, 1)
+
     def test_final_message_page_is_retained(self):
         with patch.object(app, "request_json", side_effect=FIXTURE["messages"]) as request:
             messages = app.fetch_all_messages("first")

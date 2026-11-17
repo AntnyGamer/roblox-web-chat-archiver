@@ -31,10 +31,26 @@ function Get-PropertyValue {
 }
 
 function Get-ItemArray {
-    param($Data, [string[]]$Names)
-    $value = Get-PropertyValue $Data $Names @()
-    if ($null -eq $value) { return @() }
-    return @($value)
+    param($Data, [string[]]$Names, [switch]$Required)
+    $candidates = @($Data)
+    if ($null -ne $Data) {
+        $nested = $Data.PSObject.Properties['data']
+        if ($null -ne $nested -and $null -ne $nested.Value -and $nested.Value -isnot [array]) {
+            $candidates += $nested.Value
+        }
+    }
+    foreach ($item in $candidates) {
+        if ($null -eq $item) { continue }
+        foreach ($name in $Names) {
+            $property = $item.PSObject.Properties[$name]
+            if ($null -ne $property) {
+                if ($property.Value -is [array]) { return @($property.Value) }
+                if ($Required) { throw "Malformed Roblox page: $name is not an array." }
+            }
+        }
+    }
+    if ($Required) { throw 'Malformed Roblox page: missing items array.' }
+    return @()
 }
 
 function Get-ErrorDetail {
@@ -308,7 +324,7 @@ function Get-AllConversations {
         $query = @{}
         if ($cursor) { $query['cursor'] = $cursor }
         $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
-        $items = Get-ItemArray $data @('conversations','Conversations','items')
+        $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
         foreach ($item in $items) {
             $cid = Get-ConversationId $item
             if ($cid) { $result[$cid] = $item }
@@ -333,7 +349,10 @@ function Get-AllMessages {
     while ($true) {
         $query = @{ 'conversation_id' = $ConversationId }
         if ($cursor) { $query['cursor'] = $cursor }
-        try { $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query }
+        try {
+            $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query
+            $items = @(Get-ItemArray $data @('messages','Messages','items') -Required)
+        }
         catch {
             if ($all.Count -gt 0) {
                 $partialError = New-Object System.Exception($_.Exception.Message)
@@ -342,7 +361,6 @@ function Get-AllMessages {
             }
             throw
         }
-        $items = Get-ItemArray $data @('messages','Messages','items')
         foreach ($item in $items) { [void]$all.Add($item) }
 
         $next = Get-NextCursor $data
@@ -381,6 +399,7 @@ function Get-MessageTime {
     param($Message)
     $value = Get-PropertyValue $Message @('created_at','createdAt','sent','timestamp') ''
     if ($null -eq $value) { return '' }
+    if ($value -is [DateTime]) { return $value.ToUniversalTime().ToString('o') }
     if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
         try {
             $epoch = [double]$value

@@ -299,9 +299,17 @@ def _first_value(data: Any, *keys: str, default: Any = None) -> Any:
     return default
 
 
-def _first_list(data: Any, *keys: str) -> list[Any]:
-    value = _first_value(data, *keys, default=[])
-    return value if isinstance(value, list) else []
+def _first_list(data: Any, *keys: str, required: bool = False) -> list[Any]:
+    for obj in _nested_dicts(data):
+        for key in keys:
+            if key in obj:
+                if isinstance(obj[key], list):
+                    return obj[key]
+                if required:
+                    raise ArchiverError(f"Malformed Roblox page: {key} is not an array.")
+    if required:
+        raise ArchiverError("Malformed Roblox page: missing items array.")
+    return []
 
 
 def _next_cursor(data: Any) -> str | None:
@@ -387,7 +395,7 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
     while True:
         page += 1
         data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor})
-        items = _first_list(data, "conversations", "Conversations", "items")
+        items = _first_list(data, "conversations", "Conversations", "items", required=True)
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -418,13 +426,13 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
                 f"{CHAT_BASE}/get-conversation-messages",
                 {"conversation_id": conversation_id, "cursor": cursor},
             )
+            items = _first_list(data, "messages", "Messages", "items", required=True)
         except AuthenticationError:
             raise
         except ArchiverError as exc:
             if messages:
                 raise PartialMessagesError(str(exc), messages) from exc
             raise
-        items = _first_list(data, "messages", "Messages", "items")
         messages.extend(item for item in items if isinstance(item, dict))
 
         next_cursor = _next_cursor(data)
