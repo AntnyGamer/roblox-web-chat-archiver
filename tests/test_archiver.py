@@ -98,11 +98,20 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(list(caught.exception.conversations), ["saved"])
         self.assertIn("Malformed Roblox page", str(caught.exception))
 
-    def test_missing_conversation_id_is_not_silently_dropped(self):
-        with patch.object(app, "request_json", return_value={"conversations": [{}]}):
+    def test_optional_conversation_ids_are_retained_and_pagination_continues(self):
+        pages = [
+            {"conversations": [
+                {"id": None, "name": "Missing ID", "messages": [{"content": "preview"}]},
+                {"id": "known", "name": "Known"}], "nextCursor": "next"},
+            {"conversations": [{"name": "Another missing ID"}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages) as request:
             with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(app.ArchiverError, "valid ID"):
-                    app.fetch_all_conversations()
+                conversations = app.fetch_all_conversations()
+        self.assertEqual(set(conversations), {"__missing-id-p1-i1", "known", "__missing-id-p2-i1"})
+        self.assertEqual(conversations["__missing-id-p1-i1"]["messages"][0]["content"], "preview")
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(all(call.args[1]["include_user_data"] == "true" for call in request.call_args_list))
 
     def test_repeated_conversation_cursor_fails_closed(self):
         pages = [{"conversations": [], "nextCursor": "same"},
@@ -123,7 +132,7 @@ class ArchiverTests(unittest.TestCase):
     def test_invalid_collection_members_are_not_silently_skipped(self):
         with patch.object(app, "request_json", return_value={"conversations": [{"id": "one"}, None]}):
             with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(app.ArchiverError, "valid ID"):
+                with self.assertRaisesRegex(app.ArchiverError, "items must be objects"):
                     app.fetch_all_conversations()
         pages = [{"messages": [{"content": "retained"}], "nextCursor": "next"},
                  {"messages": [{"content": "valid"}, "invalid"]}]
@@ -237,6 +246,33 @@ class ArchiverTests(unittest.TestCase):
             if os.name == "posix":
                 self.assertEqual(first.stat().st_mode & 0o777, 0o600, "chat archives must be private on Unix")
                 self.assertEqual(second.stat().st_mode & 0o777, 0o600)
+
+    def test_main_preserves_idless_conversation_and_fetches_known_ids(self):
+        raw = {"__missing-id-p1-i1": {"id": None, "name": "No ID",
+                    "messages": [{"sender_user_id": 11, "content": "preview"}]},
+               "known": {"id": "known", "name": "Known conversation"}}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value=raw))
+            fetch = stack.enter_context(patch.object(app, "fetch_all_messages", return_value=[{"content": "full"}]))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            with tempfile.TemporaryDirectory() as folder:
+                stack.enter_context(patch.object(app.Path, "cwd", return_value=Path(folder)))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(app.main(), 0)
+                files = list(Path(folder).glob("roblox-chat-archive-*.json"))
+                self.assertEqual(len(files), 1)
+                archive = json.loads(files[0].read_text(encoding="utf-8"))
+        fetch.assert_called_once_with("known")
+        unknown = archive["conversations"]["__missing-id-p1-i1"]
+        self.assertEqual(unknown["_archiveStatus"], "missing-id")
+        self.assertEqual(unknown["messages"][0]["content"], "preview")
+        self.assertEqual(archive["conversations"]["known"]["messages"][0]["content"], "full")
+        self.assertEqual(archive["archiveMeta"]["missingIdConversations"], 1)
+        self.assertEqual(len(archive["archiveMeta"]["failedConversations"]), 1)
 
     def test_main_saves_partial_conversation_list_and_marks_archive(self):
         conversation = {"id": "partial", "name": "Only known"}

@@ -330,9 +330,11 @@ function Get-NextCursor {
 
 function Get-ConversationId {
     param($Convo)
-    $value = Get-PropertyValue $Convo @('id','conversation_id','conversationId') $null
-    if ($null -eq $value -or ([string]$value).Length -eq 0) { return $null }
-    return [string]$value
+    foreach ($name in @('id','conversation_id','conversationId')) {
+        $value = Get-PropertyValue $Convo @($name) $null
+        if ($null -ne $value -and ([string]$value).Length -gt 0) { return [string]$value }
+    }
+    return $null
 }
 
 function Get-AllConversations {
@@ -355,7 +357,7 @@ function Get-AllConversations {
             }
             for ($index = 0; $index -lt $items.Count; $index++) {
                 $cid = Get-ConversationId $items[$index]
-                if (-not $cid) { $cid = "__missing-id-p$page-i$($index + 1)" }
+                if (-not $cid) { $cid = '__missing-id-p{0}-i{1}' -f $page, ($index + 1) }
                 $result[$cid] = $items[$index]
             }
             $next = Get-NextCursor $data
