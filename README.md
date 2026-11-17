@@ -41,7 +41,7 @@ For Chrome or Microsoft Edge:
 - Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);
 - Replaces the old CDN-based viewer with a fully local viewer;
 - Renders archive-controlled text with `textContent` instead of injecting it as HTML;
-- Adds conversation search, safer handling of missing users/dates, and responsive viewing for smaller screens.
+- Adds conversation search with reusable DOM rows for faster searching in large archives, safer handling of missing users/dates, and responsive viewing for smaller screens.
 
 ## Security warning
 

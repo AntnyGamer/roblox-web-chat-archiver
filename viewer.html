@@ -37,6 +37,7 @@ button,input{font:inherit}.app{height:100vh;display:grid;grid-template-columns:m
 "use strict";
 let archive = null;
 let conversationEntries = [];
+let conversationRows = [], emptyConversationRow = null;
 const latestCache = new WeakMap();
 const $ = id => document.getElementById(id);
 const picker = $("picker");
@@ -62,24 +63,32 @@ function latestMessage(convo){
   return best;
 }
 
-function renderConversationList(filter=""){
-  const root=$("convos"); root.textContent="";
-  const q=filter.trim().toLowerCase();
-  let shown=0;
+function buildConversationList(){
   const fragment=document.createDocumentFragment();
-  for(const [id,convo] of conversationEntries){
+  conversationRows=conversationEntries.map(([id,convo])=>{
     const title=text(convo.title || convo.name || `Conversation ${id}`);
     const last=latestMessage(convo);
     const preview=last ? `${speakerName(last.senderTargetId ?? last.sender_user_id ?? last.senderUserId ?? 0)}: ${text(last.content ?? last.text ?? last.message)}` : "No messages";
-    if(q && !(title.toLowerCase().includes(q) || preview.toLowerCase().includes(q))) continue;
-    shown++;
     const el=document.createElement("div"); el.className="convo"; el.dataset.id=id;
     const t=document.createElement("div"); t.className="convo-title"; t.textContent=title;
     const p=document.createElement("div"); p.className="preview"; p.textContent=preview;
-    el.append(t,p); el.addEventListener("click",()=>openConversation(id,el)); fragment.append(el);
+    el.append(t,p);fragment.append(el);
+    return {el,title:title.toLowerCase(),preview:preview.toLowerCase()};
+  });
+  emptyConversationRow=document.createElement("div");
+  emptyConversationRow.className="empty";emptyConversationRow.textContent="No matching conversations.";
+  fragment.append(emptyConversationRow);
+  $("convos").replaceChildren(fragment);
+}
+function renderConversationList(filter=""){
+  const q=filter.trim().toLowerCase();
+  let shown=0;
+  for(const row of conversationRows){
+    const visible=!q||row.title.includes(q)||row.preview.includes(q);
+    row.el.hidden=!visible;
+    if(visible)shown++;
   }
-  if(!shown){ const e=document.createElement("div"); e.className="empty"; e.textContent="No matching conversations."; fragment.append(e); }
-  root.append(fragment);
+  emptyConversationRow.hidden=shown>0;
 }
 
 function openConversation(id, el){
@@ -134,7 +143,7 @@ function loadArchive(file){
       $("stats").textContent=`${conversationEntries.length.toLocaleString()} conversations • ${msgCount.toLocaleString()} messages`;
       $("welcome").classList.add("hidden"); $("app").classList.remove("hidden"); $("sidebar").classList.remove("hide-mobile");
       $("chatTitle").textContent="Select a conversation"; $("messages").innerHTML='<div class="empty">Choose a conversation on the left.</div>';
-      $("search").value=""; renderConversationList();
+      $("search").value=""; buildConversationList(); renderConversationList();
     }catch(err){ alert(`That does not look like a valid Roblox chat archive.\n\n${err.message}`); }
   };
   reader.readAsText(file,"UTF-8");
@@ -144,6 +153,10 @@ function choose(){ picker.value=""; picker.click(); }
 $("loadWelcome").addEventListener("click",choose); $("loadAgain").addEventListener("click",choose);
 picker.addEventListener("change",e=>{ if(e.target.files && e.target.files[0]) loadArchive(e.target.files[0]); });
 $("search").addEventListener("input",e=>renderConversationList(e.target.value));
+$("convos").addEventListener("click",e=>{
+  const row=e.target.closest(".convo");
+  if(row&&$("convos").contains(row))openConversation(row.dataset.id,row);
+});
 $("back").addEventListener("click",()=>$("sidebar").classList.remove("hide-mobile"));
 </script>
 </body>
