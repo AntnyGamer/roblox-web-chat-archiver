@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$AppName = 'Roblox Web Chat Archiver (2026 refresh)'
+$AppName = 'Roblox Web Chat Archiver v1.1.0 (2026 refresh)'
 $ChatBase = 'https://apis.roblox.com/platform-chat-api/v1'
 $UsersBase = 'https://users.roblox.com/v1'
 $MinRequestIntervalMs = 520
@@ -12,6 +12,18 @@ $MaxRetries = 6
 $script:LastRequestUtc = [DateTime]::UtcNow.AddSeconds(-5)
 $script:WebSession = $null
 $script:CsrfToken = $null
+
+function Save-ArchiveJson {
+    param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Json)
+    $tmp = $Path + '.tmp'
+    try {
+        [IO.File]::WriteAllText($tmp, $Json, (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $Path
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function Get-PropertyValue {
     param($Object, [string[]]$Names, $Default = $null)
@@ -31,10 +43,26 @@ function Get-PropertyValue {
 }
 
 function Get-ItemArray {
-    param($Data, [string[]]$Names)
-    $value = Get-PropertyValue $Data $Names @()
-    if ($null -eq $value) { return @() }
-    return @($value)
+    param($Data, [string[]]$Names, [switch]$Required)
+    $candidates = @($Data)
+    if ($null -ne $Data) {
+        $nested = $Data.PSObject.Properties['data']
+        if ($null -ne $nested -and $null -ne $nested.Value -and $nested.Value -isnot [array]) {
+            $candidates += $nested.Value
+        }
+    }
+    foreach ($item in $candidates) {
+        if ($null -eq $item) { continue }
+        foreach ($name in $Names) {
+            $property = $item.PSObject.Properties[$name]
+            if ($null -ne $property) {
+                if ($property.Value -is [array]) { return @($property.Value) }
+                if ($Required) { throw "Malformed Roblox page: $name is not an array." }
+            }
+        }
+    }
+    if ($Required) { throw 'Malformed Roblox page: missing items array.' }
+    return @()
 }
 
 function Get-ErrorDetail {
@@ -53,6 +81,16 @@ function Get-ErrorDetail {
     $msg = Get-PropertyValue $Payload @('message','Message','error','Error') $null
     if ($null -ne $msg) { return [string]$msg }
     return ([string]$Payload)
+}
+
+function Get-RetrySeconds {
+    param($Header, [int]$Fallback)
+    $seconds = 0.0
+    if (-not [double]::TryParse([string]$Header, [ref]$seconds) -or
+        [double]::IsNaN($seconds) -or [double]::IsInfinity($seconds) -or $seconds -lt 1) {
+        return $Fallback
+    }
+    return [int][Math]::Min(120, [Math]::Ceiling($seconds))
 }
 
 function Wait-RequestPacing {
@@ -160,14 +198,20 @@ function Invoke-RobloxJson {
 
     $lastError = $null
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $invalidJson = $false
         try {
             $response = Invoke-RobloxRaw -Url $Url -Method GET -Query $Query
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
-            return ($content | ConvertFrom-Json)
+            try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
+            catch {
+                $invalidJson = $true
+                throw "Roblox returned non-JSON data from $Url."
+            }
         }
         catch {
             $lastError = $_.Exception
+            if ($invalidJson) { throw }
             $status = $null
             $body = ''
             $response = $_.Exception.Response
@@ -197,11 +241,7 @@ function Invoke-RobloxJson {
                 throw ("Roblox refused the authenticated request (HTTP 403). Roblox said: {0}" -f $detail)
             }
             if ($status -eq 429 -and $attempt -lt $MaxRetries) {
-                $retryAfter = Get-ResponseHeaderValue $response 'Retry-After'
-                $wait = 0
-                if (-not [Int32]::TryParse([string]$retryAfter, [ref]$wait) -or $wait -lt 1) {
-                    $wait = [int][Math]::Min(30, [Math]::Pow(2, $attempt))
-                }
+                $wait = Get-RetrySeconds (Get-ResponseHeaderValue $response 'Retry-After') ([int][Math]::Min(30, [Math]::Pow(2, $attempt)))
                 Write-Host "`nRate limited by Roblox; retrying after $wait seconds..."
                 Start-Sleep -Seconds $wait
                 continue
@@ -237,9 +277,8 @@ function Invoke-PublicRobloxJson {
         'Accept' = 'application/json, text/plain, */*'
         'User-Agent' = 'RobloxWebChatArchiver/2026'
     }
-    $lastError = $null
-
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $invalidJson = $false
         try {
             if ($Method -eq 'POST') {
                 $jsonBody = $Body | ConvertTo-Json -Depth 12 -Compress
@@ -250,20 +289,20 @@ function Invoke-PublicRobloxJson {
             }
             $content = [string]$response.Content
             if ([string]::IsNullOrWhiteSpace($content)) { return $null }
-            return ($content | ConvertFrom-Json)
+            try { return ($content | ConvertFrom-Json -ErrorAction Stop) }
+            catch {
+                $invalidJson = $true
+                throw "Roblox public API returned non-JSON data from $Url."
+            }
         }
         catch {
-            $lastError = $_.Exception
+            if ($invalidJson) { throw }
             $status = $null
             $response = $_.Exception.Response
             if ($null -ne $response) { try { $status = [int]$response.StatusCode } catch {} }
 
             if ($status -eq 429 -and $attempt -lt $MaxRetries) {
-                $retryAfter = Get-ResponseHeaderValue $response 'Retry-After'
-                $wait = 0
-                if (-not [Int32]::TryParse([string]$retryAfter, [ref]$wait) -or $wait -lt 1) {
-                    $wait = [int][Math]::Min(20, [Math]::Pow(2, $attempt))
-                }
+                $wait = Get-RetrySeconds (Get-ResponseHeaderValue $response 'Retry-After') ([int][Math]::Min(20, [Math]::Pow(2, $attempt)))
                 Start-Sleep -Seconds $wait
                 continue
             }
@@ -278,7 +317,6 @@ function Invoke-PublicRobloxJson {
             throw
         }
     }
-    throw ("Could not reach Roblox public API after {0} attempts: {1}" -f $MaxRetries, $lastError.Message)
 }
 
 function Get-NextCursor {
@@ -305,19 +343,34 @@ function Get-AllConversations {
 
     while ($true) {
         $page++
-        $query = @{}
+        $query = @{ 'pageSize' = 30 }
         if ($cursor) { $query['cursor'] = $cursor }
-        $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
-        $items = Get-ItemArray $data @('conversations','Conversations','items')
-        foreach ($item in $items) {
-            $cid = Get-ConversationId $item
-            if ($cid) { $result[$cid] = $item }
+        try {
+            $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
+            $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
+            foreach ($item in $items) {
+                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array] -or
+                    -not (Get-ConversationId $item)) {
+                    throw 'Malformed Roblox conversation page: items require a valid ID.'
+                }
+            }
+            foreach ($item in $items) { $result[(Get-ConversationId $item)] = $item }
+            $next = Get-NextCursor $data
+            if ($next -and $seen.ContainsKey($next)) {
+                throw 'Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.'
+            }
+        }
+        catch {
+            if ($_.Exception.Message -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') { throw }
+            if ($result.Count -gt 0) {
+                $partialError = New-Object System.Exception($_.Exception.Message)
+                $partialError.Data['PartialConversations'] = $result
+                throw $partialError
+            }
+            throw
         }
         Write-Host ("  conversations page {0}: +{1} (total {2})" -f $page, $items.Count, $result.Count)
-
-        $next = Get-NextCursor $data
         if (-not $next) { break }
-        if ($seen.ContainsKey($next)) { throw 'Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.' }
         $seen[$next] = $true
         $cursor = $next
     }
@@ -331,15 +384,34 @@ function Get-AllMessages {
     $cursor = $null
     $seen = @{}
     while ($true) {
-        $query = @{ 'conversation_id' = $ConversationId }
+        $query = @{ 'conversation_id' = $ConversationId; 'pageSize' = 30 }
         if ($cursor) { $query['cursor'] = $cursor }
-        $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query
-        $items = Get-ItemArray $data @('messages','Messages','items')
+        try {
+            $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query
+            $items = @(Get-ItemArray $data @('messages','Messages','items') -Required)
+            foreach ($item in $items) {
+                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array]) {
+                    throw 'Malformed Roblox message page: items must be objects.'
+                }
+            }
+        }
+        catch {
+            if ($all.Count -gt 0) {
+                $partialError = New-Object System.Exception($_.Exception.Message)
+                $partialError.Data['PartialMessages'] = $all.ToArray()
+                throw $partialError
+            }
+            throw
+        }
         foreach ($item in $items) { [void]$all.Add($item) }
 
         $next = Get-NextCursor $data
         if (-not $next) { break }
-        if ($seen.ContainsKey($next)) { throw "Roblox returned the same message cursor twice for conversation $ConversationId." }
+        if ($seen.ContainsKey($next)) {
+            $partialError = New-Object System.Exception("Roblox returned the same message cursor twice for conversation $ConversationId.")
+            $partialError.Data['PartialMessages'] = $all.ToArray()
+            throw $partialError
+        }
         $seen[$next] = $true
         $cursor = $next
     }
@@ -369,24 +441,32 @@ function Get-MessageTime {
     param($Message)
     $value = Get-PropertyValue $Message @('created_at','createdAt','sent','timestamp') ''
     if ($null -eq $value) { return '' }
+    if ($value -is [DateTime]) { return $value.ToUniversalTime().ToString('o') }
+    if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
+        try {
+            $epoch = [double]$value
+            $milliseconds = if ($epoch -gt 10000000000) { $epoch } else { $epoch * 1000 }
+            return [DateTimeOffset]::FromUnixTimeMilliseconds([long]$milliseconds).UtcDateTime.ToString('o')
+        } catch {}
+    }
     return [string]$value
 }
 
 function Get-ParticipantIds {
     param($Convo)
     $raw = Get-PropertyValue $Convo @('participant_user_ids','participantUserIds','participants') @()
-    $ids = @()
+    $ids = [ordered]@{}
     foreach ($item in @($raw)) {
         $value = $item
         if ($item -isnot [string] -and $item -isnot [ValueType]) {
             $value = Get-PropertyValue $item @('id','userId','targetId') $null
         }
         $id = 0L
-        if ($null -ne $value -and [Int64]::TryParse([string]$value, [ref]$id) -and $id -ne 0 -and $ids -notcontains $id) {
-            $ids += $id
+        if ($null -ne $value -and [Int64]::TryParse([string]$value, [ref]$id) -and $id -ne 0) {
+            $ids[[string]$id] = $id
         }
     }
-    return $ids
+    return @($ids.Values)
 }
 
 function Get-CreatedById {
@@ -480,12 +560,19 @@ try {
     Write-Host "Logged in as $myName (ID $myId)."
 
     Write-Host "`nFetching conversations..."
-    $rawConversations = Get-AllConversations
+    $conversationListError = $null
+    try { $rawConversations = Get-AllConversations }
+    catch {
+        $partial = $_.Exception.Data['PartialConversations']
+        if ($null -eq $partial -or $partial.Count -eq 0) { throw }
+        $rawConversations = $partial
+        $conversationListError = $_.Exception.Message
+        Write-Host ("WARNING: Conversation list is incomplete ({0})." -f $conversationListError) -ForegroundColor Yellow
+    }
     Write-Host ("Found {0} conversations.`n" -f $rawConversations.Count)
 
     $normalized = [ordered]@{}
     $ids = @{}
-    $ids[[string]$myId] = $myId
     $failures = New-Object System.Collections.ArrayList
     $i = 0
 
@@ -513,7 +600,12 @@ try {
             if ($conversationError -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') {
                 throw
             }
-            $archiveStatus = 'metadata-only-error'
+            $partial = $_.Exception.Data['PartialMessages']
+            if ($null -ne $partial -and @($partial).Count -gt 0) {
+                $messages = @($partial)
+                $archiveStatus = 'partial-error'
+            }
+            else { $archiveStatus = 'metadata-only-error' }
             $archiveError = $conversationError
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$conversationError })
         }
@@ -550,7 +642,7 @@ try {
         $normalized[$cid] = $outConvo
 
         if ($archiveError) {
-            Write-Host ("FAILED; metadata saved ({0})" -f $archiveError)
+            Write-Host ("FAILED; {0} messages saved ({1})" -f $outMessages.Count, $archiveError)
         }
         elseif (@($messages).Count -eq 0) {
             Write-Host '0 messages; metadata saved'
@@ -560,6 +652,7 @@ try {
         }
     }
 
+    [void]$ids.Remove([string]$myId)
     Write-Host ("`nResolving {0} users in batches..." -f $ids.Count)
     $people = Resolve-UsersBatch -UserIds @($ids.Values)
     $myDisplay = [string](Get-PropertyValue $me @('displayName','name') $myName)
@@ -591,11 +684,13 @@ try {
     $safeName = [Regex]::Replace($myName, '[^A-Za-z0-9 _-]', '')
     if (-not $safeName) { $safeName = 'user' }
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
-    $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}.json" -f $myId, $safeName, $stamp)
-    $tmp = $path + '.tmp'
+    $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}-{3}.json" -f $myId, $safeName, $stamp, [Guid]::NewGuid().ToString('N'))
+    if ($conversationListError) {
+        $payload.archiveMeta['conversationListIncomplete'] = $true
+        $payload.archiveMeta['conversationListError'] = $conversationListError
+    }
     $json = $payload | ConvertTo-Json -Depth 100
-    [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $path -Force
+    Save-ArchiveJson -Path $path -Json $json
 
     Write-Host "`nDone."
     Write-Host "Saved: $path"
@@ -605,6 +700,7 @@ try {
     if ($failures.Count -gt 0) {
         Write-Host ("WARNING: {0} conversation(s) had message-fetch errors; their metadata was still saved." -f $failures.Count)
     }
+    if ($conversationListError) { Write-Host 'WARNING: Only conversations discovered before the list failure were archived.' -ForegroundColor Yellow }
 }
 catch {
     $errorPath = Join-Path (Get-Location) 'archiver-error.txt'

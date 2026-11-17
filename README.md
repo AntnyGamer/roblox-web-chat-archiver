@@ -1,4 +1,4 @@
-# Roblox web chat archiver — 2026 compatibility refresh
+# Roblox web chat archiver — v1.1.0 (2026 compatibility refresh)
 
 This is a compatibility refresh of pizzaboxer's small Roblox web-chat archiver. It keeps the same local JSON archive concept and includes a self-contained `viewer.html`.
 
@@ -28,19 +28,25 @@ For Chrome or Microsoft Edge:
 ## Changes from the archived version
 
 - Fixed conversation and message pagination so the **final page is no longer discarded**;
+- Validates API page structures instead of silently interpreting malformed responses as empty archives;
+- Supports nested user-lookup results without unnecessary per-user fallback requests;
 - Updated authentication for Roblox's current `.ROBLOSECURITY` rotation behavior by using a real cookie session and accepting rotated cookies;
 - Refreshes the Roblox session when appropriate and gives clearer 401/403 authentication errors;
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;
 - Paces authenticated requests to reduce the chance of hitting Roblox's cookie-API rate limits;
+- Requests 30 items per page on conversation and message endpoints to reduce API calls;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
+- Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
+- Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
 - Records metadata-only and failed conversation information in `archiveMeta` so archive completeness is easier to understand;
+- Gives each export a unique filename to prevent one backup from overwriting another; Python also writes private archives with restricted Unix file permissions;
 - Never writes the `.ROBLOSECURITY` value to the archive and redacts it from PowerShell diagnostics if it is still present during an early failure;
 - Includes both a dependency-free **PowerShell** implementation (`archiver.ps1`) and a dependency-free **Python** implementation (`app.py`);
 - Replaces the old CDN-based viewer with a fully local viewer;
 - Renders archive-controlled text with `textContent` instead of injecting it as HTML;
-- Adds conversation search, safer handling of missing users/dates, and responsive viewing for smaller screens.
+- Adds conversation search with reusable DOM rows for faster searching in large archives, safer handling of missing users/dates, and responsive viewing for smaller screens.
 
 ## Security warning
 
