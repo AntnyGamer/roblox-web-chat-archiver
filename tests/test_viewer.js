@@ -31,7 +31,9 @@ const fixture={userId:1,people:{'1':{name:'Me'},'2':{name:'Alice'}},conversation
  first:{title:'First group',messages:[{senderTargetId:2,content:'A hidden keyword',sent:'2026-01-01'}]},
  second:{title:'Second group',messages:[{senderTargetId:1,content:'Another note',sent:'2026-01-02'}]}
 }};
-const context=vm.createContext({document,window:{innerWidth:1200},FileReader:class {},alert(){throw Error('Unexpected alert');},console,fixture});
+const alerts=[];
+class FileReader{readAsText(file){this.result=file.text;this.onload();}}
+const context=vm.createContext({document,window:{innerWidth:1200},FileReader,alert(message){alerts.push(message);},console,fixture});
 vm.runInContext(script,context,{filename:'viewer.html'});
 vm.runInContext('archive=fixture;conversationEntries=Object.entries(archive.conversations);',context);
 context.buildConversationList();
@@ -65,4 +67,19 @@ context.renderConversationList('missing');
 context.buildConversationList();
 context.renderConversationList();
 assert.equal(root.children.length,3,'loading another archive replaces old rows instead of accumulating them');
-console.log('PASS: viewer search reuses DOM, preserves selection and delegates clicks');
+const title=vm.runInContext('archive.conversations.first.title',context);
+for(const invalid of [
+ {people:[],conversations:{}},
+ {people:{},conversations:{bad:null}},
+ {people:{},conversations:'not a conversation collection'}
+]){
+ context.loadArchive({text:JSON.stringify(invalid)});
+ assert.equal(vm.runInContext('archive.conversations.first.title',context),title,'invalid imports must not discard the current archive');
+ assert.equal(root.children[0].dataset.id,'first','invalid imports must not replace visible conversation rows');
+}
+assert.equal(alerts.length,3,'invalid archive imports must report failure');
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',messages:[]}}})});
+assert.equal(root.children.length,2,'valid replacement archive resets the visible conversation list');
+assert.equal(root.children[0].dataset.id,'third');
+assert.equal(vm.runInContext('archive.conversations.third.title',context),'New archive');
+console.log('PASS: viewer search reuses DOM, preserves selection and delegates clicks; invalid imports are atomic');

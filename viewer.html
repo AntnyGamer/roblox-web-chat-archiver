@@ -128,15 +128,18 @@ function loadArchive(file){
   reader.onerror=()=>alert("Could not read that file.");
   reader.onload=()=>{
     try{
-      archive=JSON.parse(reader.result);
-      if(!archive || typeof archive!=="object" || !archive.conversations || !archive.people) throw new Error("Missing conversations/people data");
-      conversationEntries=Object.entries(archive.conversations);
-      conversationEntries.sort((a,b)=>{
+      const loaded=JSON.parse(reader.result);
+      if(!loaded||typeof loaded!=="object"||Array.isArray(loaded)||!loaded.conversations||typeof loaded.conversations!=="object"||Array.isArray(loaded.conversations)||!loaded.people||typeof loaded.people!=="object"||Array.isArray(loaded.people))
+        throw new Error("Missing or invalid conversations/people data");
+      const entries=Object.entries(loaded.conversations);
+      if(entries.some(([,convo])=>!convo||typeof convo!=="object"||Array.isArray(convo)))throw new Error("Invalid conversation data");
+      entries.sort((a,b)=>{
         const am=latestMessage(a[1]); const bm=latestMessage(b[1]);
         const at=parseDate(am?.sent || am?.created_at || am?.createdAt || am?.timestamp)?.getTime() ?? 0;
         const bt=parseDate(bm?.sent || bm?.created_at || bm?.createdAt || bm?.timestamp)?.getTime() ?? 0;
         return bt-at;
       });
+      archive=loaded;conversationEntries=entries;
       const me=personFor(archive.userId);
       $("accountName").textContent=me ? (me.name || me.displayName || `User ${archive.userId}`) : `User ${archive.userId ?? "?"}`;
       const msgCount=conversationEntries.reduce((n,[,c])=>n+(Array.isArray(c.messages)?c.messages.length:0),0);
