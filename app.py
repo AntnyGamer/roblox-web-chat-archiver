@@ -58,8 +58,9 @@ class PartialMessagesError(ArchiverError):
 
 def _normalize_cookie(value: str) -> str:
     value = value.strip().strip('"').strip("'")
-    if value.lower().startswith(".roblosecurity="):
-        value = value.split("=", 1)[1].strip()
+    name, separator, content = value.partition("=")
+    if separator and name.strip().lower() == ".roblosecurity":
+        value = content.strip()
     if ";" in value:
         value = value.split(";", 1)[0].strip()
     if not value:

@@ -27,6 +27,8 @@ class ArchiverTests(unittest.TestCase):
 
     def test_cookie_normalization(self):
         self.assertEqual(app._normalize_cookie(" .ROBLOSECURITY=abc; Path=/ "), "abc")
+        self.assertEqual(app._normalize_cookie(" .ROBLOSECURITY = abc; Path=/ "), "abc")
+        self.assertEqual(app._normalize_cookie(" .roblosecurity = abc "), "abc")
         with self.assertRaises(app.AuthenticationError):
             app._normalize_cookie("  ")
 
