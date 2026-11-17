@@ -101,10 +101,31 @@ if ($numericTime -ne '2023-11-14T22:13:20.0000000Z' -or $numericMs -ne $numericT
 $isoTime = Get-MessageTime ([pscustomobject]@{ timestamp = [DateTime]::SpecifyKind([DateTime]::Parse('2026-01-01T00:00:00'),[DateTimeKind]::Utc) })
 if ($isoTime -ne '2026-01-01T00:00:00.0000000Z') { throw 'PowerShell DateTime values must serialize as portable UTC dates' }
 $source = Get-Content $scriptPath -Raw
-if ($source -match 'Move-Item -LiteralPath \$tmp -Destination \$path -Force') {
+if ($source -match 'Move-Item -LiteralPath \$tmp -Destination \$Path -Force') {
     throw 'Final archive move must not forcibly replace an existing backup'
 }
 if ($source -notmatch '\[Guid\]::NewGuid\(\)') {
     throw 'Archive filenames must have a unique suffix'
 }
-Write-Host 'PASS: PowerShell syntax, final pages, and cursor loop safeguards'
+$backupTestDir = Join-Path $env:TEMP ('roblox-backup-test-' + [Guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $backupTestDir)
+try {
+    $backupPath = Join-Path $backupTestDir 'success.json'
+    Save-ArchiveJson -Path $backupPath -Json '{"content":"saved"}'
+    if ((Get-Content -LiteralPath $backupPath -Raw) -ne '{"content":"saved"}') {
+        throw 'Archive helper did not write the expected contents'
+    }
+    if (Test-Path -LiteralPath ($backupPath + '.tmp')) { throw 'Temporary archive remains after successful save' }
+    function Move-Item { throw 'Simulated move failure' }
+    try {
+        $failedPath = Join-Path $backupTestDir 'failed.json'
+        $caught = $false
+        try { Save-ArchiveJson -Path $failedPath -Json '{"content":"private"}' }
+        catch { $caught = $_.Exception.Message -match 'Simulated move failure' }
+        if (-not $caught) { throw 'Archive helper swallowed a move failure' }
+        if (Test-Path -LiteralPath ($failedPath + '.tmp')) { throw 'Private temporary archive remains after failed move' }
+    }
+    finally { Remove-Item Function:Move-Item -ErrorAction SilentlyContinue }
+}
+finally { Remove-Item -LiteralPath $backupTestDir -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS: PowerShell syntax, final pages, cursor safeguards, and archive cleanup'

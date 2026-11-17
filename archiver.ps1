@@ -13,6 +13,18 @@ $script:LastRequestUtc = [DateTime]::UtcNow.AddSeconds(-5)
 $script:WebSession = $null
 $script:CsrfToken = $null
 
+function Save-ArchiveJson {
+    param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Json)
+    $tmp = $Path + '.tmp'
+    try {
+        [IO.File]::WriteAllText($tmp, $Json, (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $Path
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-PropertyValue {
     param($Object, [string[]]$Names, $Default = $null)
     if ($null -eq $Object) { return $Default }
@@ -665,14 +677,12 @@ try {
     if (-not $safeName) { $safeName = 'user' }
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}-{3}.json" -f $myId, $safeName, $stamp, [Guid]::NewGuid().ToString('N'))
-    $tmp = $path + '.tmp'
     if ($conversationListError) {
         $payload.archiveMeta['conversationListIncomplete'] = $true
         $payload.archiveMeta['conversationListError'] = $conversationListError
     }
     $json = $payload | ConvertTo-Json -Depth 100
-    [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $path
+    Save-ArchiveJson -Path $path -Json $json
 
     Write-Host "`nDone."
     Write-Host "Saved: $path"
