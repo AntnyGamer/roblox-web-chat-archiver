@@ -258,7 +258,10 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
         try:
             with _public_opener.open(Request(url, headers=headers, data=data, method=method), timeout=REQUEST_TIMEOUT) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
-                return json.loads(raw) if raw.strip() else {}
+                try:
+                    return json.loads(raw) if raw.strip() else {}
+                except json.JSONDecodeError as exc:
+                    raise ArchiverError(f"Roblox public API returned non-JSON data: {url}") from exc
         except HTTPError as exc:
             if exc.code == 429 and attempt < MAX_RETRIES:
                 retry_after = exc.headers.get("Retry-After")

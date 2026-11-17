@@ -36,6 +36,17 @@ class ArchiverTests(unittest.TestCase):
                 self.assertEqual(app.request_public_json("https://users.roblox.com/v1/users/1"), {"ok": True})
             self.assertEqual(opener.open.call_count, 2)
 
+    def test_bad_public_user_response_does_not_abort_archive(self):
+        with patch.object(app, "_public_opener") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = b"<html>temporary error</html>"
+            with self.assertRaisesRegex(app.ArchiverError, "public API returned non-JSON"):
+                app.request_public_json("https://users.roblox.com/v1/users/3")
+            with contextlib.redirect_stdout(io.StringIO()):
+                people = app.resolve_users_batch([3])
+        self.assertEqual(people["3"]["name"], "Unknown user 3")
+        self.assertIn("_lookupError", people["3"])
+        self.assertEqual(opener.open.call_count, 3, "one direct request plus batch and per-user fallbacks")
+
     def test_participants_are_unique_and_keep_original_order(self):
         conversation = {"participants": [{"userId": 6}, "4", 6, "invalid", 0, {"targetId": 2}, 4]}
         self.assertEqual(app._participant_ids(conversation), [6, 4, 2])
