@@ -277,8 +277,6 @@ function Invoke-PublicRobloxJson {
         'Accept' = 'application/json, text/plain, */*'
         'User-Agent' = 'RobloxWebChatArchiver/2026'
     }
-    $lastError = $null
-
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         $invalidJson = $false
         try {
@@ -298,7 +296,6 @@ function Invoke-PublicRobloxJson {
             }
         }
         catch {
-            $lastError = $_.Exception
             if ($invalidJson) { throw }
             $status = $null
             $response = $_.Exception.Response
@@ -320,7 +317,6 @@ function Invoke-PublicRobloxJson {
             throw
         }
     }
-    throw ("Could not reach Roblox public API after {0} attempts: {1}" -f $MaxRetries, $lastError.Message)
 }
 
 function Get-NextCursor {

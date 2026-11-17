@@ -19,7 +19,7 @@ import time
 import traceback
 from typing import Any, Iterable
 import uuid
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
@@ -172,7 +172,7 @@ def refresh_session() -> None:
                             "Copy the CURRENT cookie from the Roblox tab again; Roblox may have rotated it."
                         ) from retry_exc
                     return
-                except (URLError, TimeoutError, OSError):
+                except OSError:
                     return
         if exc.code == 401:
             raise AuthenticationError(
@@ -181,7 +181,7 @@ def refresh_session() -> None:
             ) from exc
         # A refresh failure alone should not block a normal authenticated GET.
         return
-    except (URLError, TimeoutError, OSError):
+    except OSError:
         return
 
 
@@ -250,7 +250,7 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
                 time.sleep(wait)
                 continue
             raise ArchiverError(f"Roblox API error HTTP {exc.code}: {detail} ({url})") from exc
-        except (URLError, TimeoutError, OSError) as exc:
+        except OSError as exc:
             last_error = exc
             if attempt >= MAX_RETRIES:
                 break
@@ -289,7 +289,7 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
                 time.sleep(min(10.0, 2 ** (attempt - 1)))
                 continue
             raise ArchiverError(f"Roblox public API error HTTP {exc.code}: {url}") from exc
-        except (URLError, TimeoutError, OSError) as exc:
+        except OSError as exc:
             last_error = exc
             if attempt >= MAX_RETRIES:
                 break
