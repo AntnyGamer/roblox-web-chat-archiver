@@ -326,6 +326,9 @@ function Get-AllConversations {
         $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
         $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
         foreach ($item in $items) {
+            if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array]) {
+                throw 'Malformed Roblox conversation page: items must be objects.'
+            }
             $cid = Get-ConversationId $item
             if ($cid) { $result[$cid] = $item }
         }
@@ -352,6 +355,11 @@ function Get-AllMessages {
         try {
             $data = Invoke-RobloxJson -Url "$ChatBase/get-conversation-messages" -Query $query
             $items = @(Get-ItemArray $data @('messages','Messages','items') -Required)
+            foreach ($item in $items) {
+                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array]) {
+                    throw 'Malformed Roblox message page: items must be objects.'
+                }
+            }
         }
         catch {
             if ($all.Count -gt 0) {

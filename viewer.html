@@ -38,13 +38,20 @@ button,input{font:inherit}.app{height:100vh;display:grid;grid-template-columns:m
 let archive = null;
 let conversationEntries = [];
 let conversationRows = [], emptyConversationRow = null;
-const latestCache = new WeakMap();
+const latestCache = new WeakMap(), timeCache = new WeakMap();
 const $ = id => document.getElementById(id);
 const picker = $("picker");
 
 function text(v){ return v == null ? "" : String(v); }
 function parseDate(v){ const n=typeof v==="string"&&/^\d{10,13}$/.test(v)?Number(v):v; const d=new Date(typeof n==="number"&&n<1e11?n*1000:n); return Number.isNaN(d.getTime())?null:d; }
 function formatDate(v){ const d=parseDate(v); return d ? d.toLocaleString() : text(v); }
+function messageTime(m){
+  if(!m||typeof m!=="object")return undefined;
+  if(timeCache.has(m))return timeCache.get(m);
+  const value=parseDate(m.sent || m.created_at || m.createdAt || m.timestamp)?.getTime();
+  timeCache.set(m,value);
+  return value;
+}
 function personFor(id){
   if(!archive || !archive.people) return null;
   return archive.people[id] || null;
@@ -56,7 +63,7 @@ function latestMessage(convo){
   if(latestCache.has(convo)) return latestCache.get(convo);
   let best=null, newest=-Infinity;
   for(const m of Array.isArray(convo.messages)?convo.messages:[]){
-    const at=parseDate(m.sent || m.created_at || m.createdAt || m.timestamp)?.getTime();
+    const at=messageTime(m);
     if(!best || (at!==undefined && at>newest)){ best=m; newest=at??-Infinity; }
   }
   latestCache.set(convo,best);
@@ -98,11 +105,7 @@ function openConversation(id, el){
   $("chatTitle").textContent=text(convo.title || convo.name || `Conversation ${id}`);
   const root=$("messages"); root.textContent="";
   const msgs=Array.isArray(convo.messages)?[...convo.messages]:[];
-  msgs.sort((a,b)=>{
-    const ta=parseDate(a.sent || a.created_at || a.createdAt || a.timestamp)?.getTime() ?? 0;
-    const tb=parseDate(b.sent || b.created_at || b.createdAt || b.timestamp)?.getTime() ?? 0;
-    return ta-tb;
-  });
+  msgs.sort((a,b)=>(messageTime(a)??0)-(messageTime(b)??0));
   if(convo._archiveStatus==="partial-error"||convo._archiveStatus==="metadata-only-error"){
     const warning=document.createElement("div");warning.className="archive-warning";
     warning.textContent=convo._archiveStatus==="partial-error"?"Incomplete archive: later message pages could not be fetched.":"Incomplete archive: message retrieval failed.";
@@ -132,11 +135,13 @@ function loadArchive(file){
       if(!loaded||typeof loaded!=="object"||Array.isArray(loaded)||!loaded.conversations||typeof loaded.conversations!=="object"||Array.isArray(loaded.conversations)||!loaded.people||typeof loaded.people!=="object"||Array.isArray(loaded.people))
         throw new Error("Missing or invalid conversations/people data");
       const entries=Object.entries(loaded.conversations);
-      if(entries.some(([,convo])=>!convo||typeof convo!=="object"||Array.isArray(convo)))throw new Error("Invalid conversation data");
+      if(entries.some(([,convo])=>!convo||typeof convo!=="object"||Array.isArray(convo)||
+        (convo.messages!==undefined&&(!Array.isArray(convo.messages)||convo.messages.some(m=>!m||typeof m!=="object"||Array.isArray(m))))))
+        throw new Error("Invalid conversation or message data");
       entries.sort((a,b)=>{
         const am=latestMessage(a[1]); const bm=latestMessage(b[1]);
-        const at=parseDate(am?.sent || am?.created_at || am?.createdAt || am?.timestamp)?.getTime() ?? 0;
-        const bt=parseDate(bm?.sent || bm?.created_at || bm?.createdAt || bm?.timestamp)?.getTime() ?? 0;
+        const at=messageTime(am)??0;
+        const bt=messageTime(bm)??0;
         return bt-at;
       });
       archive=loaded;conversationEntries=entries;

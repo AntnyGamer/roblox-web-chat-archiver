@@ -75,15 +75,27 @@ const title=vm.runInContext('archive.conversations.first.title',context);
 for(const invalid of [
  {people:[],conversations:{}},
  {people:{},conversations:{bad:null}},
- {people:{},conversations:'not a conversation collection'}
+ {people:{},conversations:'not a conversation collection'},
+ {people:{},conversations:{bad:{messages:[null]}}},
+ {people:{},conversations:{bad:{messages:{id:3}}}}
 ]){
  context.loadArchive({text:JSON.stringify(invalid)});
  assert.equal(vm.runInContext('archive.conversations.first.title',context),title,'invalid imports must not discard the current archive');
  assert.equal(root.children[0].dataset.id,'first','invalid imports must not replace visible conversation rows');
 }
-assert.equal(alerts.length,3,'invalid archive imports must report failure');
+assert.equal(alerts.length,5,'invalid archive imports must report failure');
 context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',messages:[]}}})});
 assert.equal(root.children.length,2,'valid replacement archive resets the visible conversation list');
 assert.equal(root.children[0].dataset.id,'third');
 assert.equal(vm.runInContext('archive.conversations.third.title',context),'New archive');
-console.log('PASS: viewer search reuses DOM, preserves selection and delegates clicks; invalid imports are atomic');
+const dated={sent:'2026-01-01T00:00:00Z'};
+const stamp=context.messageTime(dated);
+assert.equal(stamp,Date.parse(dated.sent),'message timestamps must retain their ordering');
+dated.sent='2029-01-01T00:00:00Z';
+assert.equal(context.messageTime(dated),stamp,'timestamp parsing should be cached per immutable archive message');
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{
+ big:{title:'Out-of-order',messages:[{content:'later',sent:'2026-02-01'},{content:'earlier',sent:'2026-01-01'}]}
+}})});
+context.openConversation('big',root.children[0]);
+assert.equal(document.getElementById('messages').children[0].children[1].textContent,'earlier');
+console.log('PASS: viewer search reuses DOM, preserves selection and delegates clicks; invalid imports are atomic; timestamps are cached');

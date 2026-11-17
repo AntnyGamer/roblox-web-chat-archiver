@@ -75,6 +75,18 @@ class ArchiverTests(unittest.TestCase):
                     with self.assertRaisesRegex(app.ArchiverError, "Malformed Roblox page"):
                         app.fetch_all_conversations()
 
+    def test_invalid_collection_members_are_not_silently_skipped(self):
+        with patch.object(app, "request_json", return_value={"conversations": [{"id": "one"}, None]}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(app.ArchiverError, "items must be objects"):
+                    app.fetch_all_conversations()
+        pages = [{"messages": [{"content": "retained"}], "nextCursor": "next"},
+                 {"messages": [{"content": "valid"}, "invalid"]}]
+        with patch.object(app, "request_json", side_effect=pages):
+            with self.assertRaisesRegex(app.PartialMessagesError, "items must be objects") as caught:
+                app.fetch_all_messages("one")
+        self.assertEqual(caught.exception.messages, [{"content": "retained"}])
+
     def test_nested_conversation_items_are_accepted(self):
         with patch.object(app, "request_json", return_value={
             "data": {"conversations": [{"id": "chat"}]}}):

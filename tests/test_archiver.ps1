@@ -44,11 +44,25 @@ catch {
     $malformedPartial = $_.Exception.Message -match 'Malformed Roblox page' -and $partial.Count -eq 1 -and $partial[0].content -eq 'preserved'
 }
 if (-not $malformedPartial) { throw 'Malformed later message pages must preserve earlier messages' }
+$script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved' }); nextCursor='next' }, [pscustomobject]@{ messages=@('unexpected string') })
+$script:ResponseIndex = 0
+$malformedMember = $false
+try { $null = Get-AllMessages -ConversationId 'first' }
+catch {
+    $partial = @($_.Exception.Data['PartialMessages'])
+    $malformedMember = $_.Exception.Message -match 'items must be objects' -and $partial.Count -eq 1 -and $partial[0].content -eq 'saved'
+}
+if (-not $malformedMember) { throw 'Malformed message entries must not be accepted or discard earlier pages' }
 $script:Responses = @([pscustomobject]@{ message='bad conversations page' })
 $script:ResponseIndex = 0
 $invalidConversations = $false
 try { $null = Get-AllConversations } catch { $invalidConversations = $_.Exception.Message -match 'Malformed Roblox page' }
 if (-not $invalidConversations) { throw 'Malformed conversation pages must not silently look empty' }
+$script:Responses = @([pscustomobject]@{ conversations=@('unexpected string') })
+$script:ResponseIndex = 0
+$invalidMembers = $false
+try { $null = Get-AllConversations } catch { $invalidMembers = $_.Exception.Message -match 'items must be objects' }
+if (-not $invalidMembers) { throw 'Malformed conversation entries must not be skipped' }
 $nestedUsers = @(Get-ItemArray ([pscustomobject]@{ data=[pscustomobject]@{ users=@([pscustomobject]@{ id=89 }) } }) @('data','users','items'))
 if ($nestedUsers.Count -ne 1 -or $nestedUsers[0].id -ne 89) { throw 'Nested user batches should avoid individual lookups' }
 $script:Responses = @([pscustomobject]@{ conversations=@(); nextCursor='same' }, [pscustomobject]@{ conversations=@(); nextCursor='same' })

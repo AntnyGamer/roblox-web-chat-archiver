@@ -396,9 +396,9 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
         page += 1
         data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor})
         items = _first_list(data, "conversations", "Conversations", "items", required=True)
+        if any(not isinstance(item, dict) for item in items):
+            raise ArchiverError("Malformed Roblox conversation page: items must be objects.")
         for item in items:
-            if not isinstance(item, dict):
-                continue
             cid = _conversation_id(item)
             if cid:
                 conversations[cid] = item
@@ -427,13 +427,15 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
                 {"conversation_id": conversation_id, "cursor": cursor},
             )
             items = _first_list(data, "messages", "Messages", "items", required=True)
+            if any(not isinstance(item, dict) for item in items):
+                raise ArchiverError("Malformed Roblox message page: items must be objects.")
         except AuthenticationError:
             raise
         except ArchiverError as exc:
             if messages:
                 raise PartialMessagesError(str(exc), messages) from exc
             raise
-        messages.extend(item for item in items if isinstance(item, dict))
+        messages.extend(items)
 
         next_cursor = _next_cursor(data)
         if not next_cursor:
