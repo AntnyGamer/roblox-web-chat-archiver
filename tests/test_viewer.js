@@ -84,11 +84,15 @@ for(const invalid of [
  assert.equal(root.children[0].dataset.id,'first','invalid imports must not replace visible conversation rows');
 }
 assert.equal(alerts.length,5,'invalid archive imports must report failure');
-context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',messages:[]}},archiveMeta:{conversationListIncomplete:true}})});
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{third:{title:'New archive',_archiveStatus:'missing-id',messages:[{content:'preview'}]}},archiveMeta:{conversationListIncomplete:true,missingIdConversations:1}})});
 assert.match(document.getElementById('stats').textContent,/Incomplete conversation list/,'partial conversation archives need a visible warning');
+assert.match(document.getElementById('stats').textContent,/1 missing IDs/,'nullable conversation IDs need a visible count');
 assert.equal(root.children.length,2,'valid replacement archive resets the visible conversation list');
 assert.equal(root.children[0].dataset.id,'third');
 assert.equal(vm.runInContext('archive.conversations.third.title',context),'New archive');
+context.openConversation('third',root.children[0]);
+assert.match(document.getElementById('messages').children[0].textContent,/omitted this conversation's ID/,'missing-ID conversations need a warning');
+assert.match(document.getElementById('messages').children[1].textContent,/preview/,'missing-ID previews must remain readable');
 const dated={sent:'2026-01-01T00:00:00Z'};
 const stamp=context.messageTime(dated);
 assert.equal(stamp,Date.parse(dated.sent),'message timestamps must retain their ordering');

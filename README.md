@@ -34,12 +34,13 @@ For Chrome or Microsoft Edge:
 - Refreshes the Roblox session when appropriate and gives clearer 401/403 authentication errors;
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;
 - Paces authenticated requests to reduce the chance of hitting Roblox's cookie-API rate limits;
-- Requests 30 items per page on conversation and message endpoints to reduce API calls;
+- Requests 30 items per page on conversation and message endpoints to reduce API calls and includes user data in conversation-list requests;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
 - Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
 - Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
+- Keeps conversation metadata and any embedded message previews when Roblox returns a conversation without an ID, flags its history as incomplete, and continues with other conversations;
 - Records metadata-only and failed conversation information in `archiveMeta` so archive completeness is easier to understand;
 - Gives each export a unique filename to prevent one backup from overwriting another; Python also writes private archives with restricted Unix file permissions;
 - Never writes the `.ROBLOSECURITY` value to the archive and redacts it from PowerShell diagnostics if it is still present during an early failure;

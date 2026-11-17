@@ -23,7 +23,9 @@ function Invoke-RobloxJson {
 $conversations = Get-AllConversations
 if ($conversations.Count -ne 2 -or -not $conversations.Contains('first') -or -not $conversations.Contains('last')) { throw 'Final conversation page was dropped' }
 if ($script:ResponseIndex -ne 2) { throw 'Wrong conversation request count' }
-if ($script:LastQuery.pageSize -ne 30) { throw 'Conversation requests must ask for 30 items per page' }
+if ($script:LastQuery.pageSize -ne 30 -or $script:LastQuery.include_user_data -ne 'true') {
+    throw 'Conversation requests must ask for 30 items per page and user data'
+}
 $script:Responses = @($fixture.messages)
 $script:ResponseIndex = 0
 $messages = @(Get-AllMessages -ConversationId 'first')
@@ -38,11 +40,29 @@ catch {
     $partialList = $_.Exception.Message -match 'Malformed Roblox page' -and $null -ne $partial -and $partial.Contains('saved-chat')
 }
 if (-not $partialList) { throw 'Later conversation-list failures must preserve earlier conversation IDs' }
-$script:Responses = @([pscustomobject]@{ conversations=@([pscustomobject]@{ name='missing ID' }) })
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@(
+        [pscustomobject]@{ id=$null; name='Missing ID'; messages=@([pscustomobject]@{ content='preview' }) },
+        [pscustomobject]@{ id='known'; name='Known' }
+    ); nextCursor='next' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ name='Another missing ID' }) }
+)
 $script:ResponseIndex = 0
-$missingIdRejected = $false
-try { $null = Get-AllConversations } catch { $missingIdRejected = $_.Exception.Message -match 'valid ID' }
-if (-not $missingIdRejected) { throw 'Conversation records without IDs must not be silently skipped' }
+$idless = Get-AllConversations
+if ($idless.Count -ne 3 -or -not $idless.Contains('__missing-id-p1-i1') -or
+    -not $idless.Contains('__missing-id-p2-i1') -or -not $idless.Contains('known') -or
+    $idless['__missing-id-p1-i1'].messages[0].content -ne 'preview') {
+    throw 'Nullable conversation IDs must retain metadata and embedded preview messages'
+}
+if ($script:ResponseIndex -ne 2 -or $script:LastQuery.include_user_data -ne 'true') { throw 'Nullable IDs must not interrupt pagination' }
+if ((Get-ConversationId ([pscustomobject]@{ id=$null; conversationId='other-id' })) -ne 'other-id') {
+    throw 'Conversation ID lookup must fall back when the primary ID is null'
+}
+$sourceForMissingId = Get-Content -LiteralPath $scriptPath -Raw
+if ($sourceForMissingId -notmatch "preview_message','previewMessage" -or
+    $sourceForMissingId -notmatch 'archiveStatus = ''missing-id''') {
+    throw 'ID-less conversation archiving must preserve embedded previews and mark missing IDs'
+}
 $script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
 $script:ResponseIndex = 0
 $partialSaved = $false
@@ -78,7 +98,7 @@ if (-not $invalidConversations) { throw 'Malformed conversation pages must not s
 $script:Responses = @([pscustomobject]@{ conversations=@('unexpected string') })
 $script:ResponseIndex = 0
 $invalidMembers = $false
-try { $null = Get-AllConversations } catch { $invalidMembers = $_.Exception.Message -match 'valid ID' }
+try { $null = Get-AllConversations } catch { $invalidMembers = $_.Exception.Message -match 'items must be objects' }
 if (-not $invalidMembers) { throw 'Malformed conversation entries must not be skipped' }
 $nestedUsers = @(Get-ItemArray ([pscustomobject]@{ data=[pscustomobject]@{ users=@([pscustomobject]@{ id=89 }) } }) @('data','users','items'))
 if ($nestedUsers.Count -ne 1 -or $nestedUsers[0].id -ne 89) { throw 'Nested user batches should avoid individual lookups' }
@@ -88,6 +108,15 @@ $loopStopped = $false
 try { $null = Get-AllConversations } catch { $loopStopped = $_.Exception.Message -match 'cursor' }
 if (-not $loopStopped) { throw 'Repeated cursor was not rejected' }
 if ((Get-NextCursor ([pscustomobject]@{ nextCursor='xyz' })) -ne 'xyz') { throw 'Cursor parsing failed' }
+if ((Get-NextCursor ([pscustomobject]@{ next_cursor=$null; nextCursor='fallback' })) -ne 'fallback') {
+    throw 'Null cursor alias must not prevent fetching later pages'
+}
+$previewAlias = Get-PreviewMessage ([pscustomobject]@{
+    preview_message=$null; previewMessage=[pscustomobject]@{ content='retained preview' }
+})
+if ($null -eq $previewAlias -or $previewAlias.content -ne 'retained preview') {
+    throw 'Null preview alias must not hide available conversation preview'
+}
 if ((Get-RetrySeconds '999999999' 4) -ne 120 -or
     (Get-RetrySeconds 'NaN' 4) -ne 4 -or
     (Get-RetrySeconds 'Infinity' 4) -ne 4 -or

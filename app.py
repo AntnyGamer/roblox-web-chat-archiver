@@ -188,9 +188,9 @@ def refresh_session() -> None:
 def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET JSON through the authenticated cookie session."""
     if params:
-        clean_params = {k: v for k, v in params.items() if v is not None and v != ""}
-        if clean_params:
-            url = f"{url}?{urlencode(clean_params)}"
+        query = urlencode({k: v for k, v in params.items() if v is not None and v != ""})
+        if query:
+            url += f"?{query}"
 
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -305,14 +305,6 @@ def _nested_dicts(data: Any) -> Iterable[dict[str, Any]]:
             yield nested
 
 
-def _first_value(data: Any, *keys: str, default: Any = None) -> Any:
-    for obj in _nested_dicts(data):
-        for key in keys:
-            if key in obj:
-                return obj[key]
-    return default
-
-
 def _first_list(data: Any, *keys: str, required: bool = False) -> list[Any]:
     for obj in _nested_dicts(data):
         for key in keys:
@@ -327,11 +319,14 @@ def _first_list(data: Any, *keys: str, required: bool = False) -> list[Any]:
 
 
 def _next_cursor(data: Any) -> str | None:
-    value = _first_value(data, "next_cursor", "nextCursor", "nextPageCursor", default=None)
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value or None
+    for obj in _nested_dicts(data):
+        for key in ("next_cursor", "nextCursor", "nextPageCursor"):
+            value = obj.get(key)
+            if value is not None:
+                cursor = str(value).strip()
+                if cursor:
+                    return cursor
+    return None
 
 
 def _conversation_id(convo: dict[str, Any]) -> str | None:
@@ -409,12 +404,13 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
     while True:
         page += 1
         try:
-            data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor, "pageSize": 30})
+            data = request_json(f"{CHAT_BASE}/get-user-conversations", {"cursor": cursor, "pageSize": 30, "include_user_data": "true"})
             items = _first_list(data, "conversations", "Conversations", "items", required=True)
-            if any(not isinstance(item, dict) or not _conversation_id(item) for item in items):
-                raise ArchiverError("Malformed Roblox conversation page: items require a valid ID.")
-            for item in items:
-                conversations[_conversation_id(item)] = item
+            if any(not isinstance(item, dict) for item in items):
+                raise ArchiverError("Malformed Roblox conversation page: items must be objects.")
+            for index, item in enumerate(items, 1):
+                cid = _conversation_id(item) or f"__missing-id-p{page}-i{index}"
+                conversations[cid] = item
             next_cursor = _next_cursor(data)
             if next_cursor in seen_cursors:
                 raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
@@ -578,6 +574,7 @@ def write_archive(
             "conversationCount": len(conversations),
             "metadataOnlyConversations": metadata_only,
             "failedConversations": failures,
+            "missingIdConversations": sum(1 for c in conversations.values() if c.get("_archiveStatus") == "missing-id"),
         },
     }
 
@@ -656,18 +653,29 @@ def main() -> int:
         unknown_ids.update(_participant_ids(raw_convo))
 
         error = None
-        try:
-            messages = fetch_all_messages(cid)
-        except AuthenticationError:
-            raise
-        except ArchiverError as exc:
-            error = str(exc)
+        missing_id = _conversation_id(raw_convo) is None
+        if missing_id:
+            error = "Roblox returned this conversation without an ID; full message history cannot be requested."
+            embedded = raw_convo.get("messages")
+            messages = embedded if isinstance(embedded, list) and all(isinstance(m, dict) for m in embedded) else []
+            if not messages:
+                preview = raw_convo.get("preview_message") or raw_convo.get("previewMessage")
+                if isinstance(preview, dict):
+                    messages = [preview]
             failures.append({"conversationId": cid, "title": str(title), "error": error})
-            messages = exc.messages if isinstance(exc, PartialMessagesError) else []
-
-        status = ("partial-error" if messages else "metadata-only-error") if error else (
-            "metadata-only-empty-response" if not messages else None
-        )
+            status = "missing-id"
+        else:
+            try:
+                messages = fetch_all_messages(cid)
+            except AuthenticationError:
+                raise
+            except ArchiverError as exc:
+                error = str(exc)
+                failures.append({"conversationId": cid, "title": str(title), "error": error})
+                messages = exc.messages if isinstance(exc, PartialMessagesError) else []
+            status = ("partial-error" if messages else "metadata-only-error") if error else (
+                "metadata-only-empty-response" if not messages else None
+            )
         normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status, archive_error=error)
         normalized_conversations[cid] = normalized
 
@@ -716,7 +724,7 @@ def main() -> int:
     if metadata_only:
         print(f"Metadata-only conversations: {metadata_only}")
     if failures:
-        print(f"WARNING: {len(failures)} conversation(s) had message-fetch errors; their metadata was still saved.")
+        print(f"WARNING: {len(failures)} conversation(s) have incomplete message history; their metadata was saved.")
     if conversation_list_error:
         print("WARNING: The archive contains only conversations discovered before the list failed.")
 
