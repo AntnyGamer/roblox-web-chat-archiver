@@ -188,9 +188,9 @@ def refresh_session() -> None:
 def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET JSON through the authenticated cookie session."""
     if params:
-        clean_params = {k: v for k, v in params.items() if v is not None and v != ""}
-        if clean_params:
-            url = f"{url}?{urlencode(clean_params)}"
+        query = urlencode({k: v for k, v in params.items() if v is not None and v != ""})
+        if query:
+            url += f"?{query}"
 
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -303,14 +303,6 @@ def _nested_dicts(data: Any) -> Iterable[dict[str, Any]]:
         nested = data.get("data")
         if isinstance(nested, dict):
             yield nested
-
-
-def _first_value(data: Any, *keys: str, default: Any = None) -> Any:
-    for obj in _nested_dicts(data):
-        for key in keys:
-            if key in obj:
-                return obj[key]
-    return default
 
 
 def _first_list(data: Any, *keys: str, required: bool = False) -> list[Any]:
