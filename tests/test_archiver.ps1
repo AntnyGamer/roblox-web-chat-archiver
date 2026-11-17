@@ -82,6 +82,54 @@ if ($cached.Count -ne 1 -or -not $cached.Contains('99') -or
     -not $cached['99'].hasVerifiedBadge) {
     throw 'Embedded user profiles should be reused only when complete'
 }
+$profileConversations = @(
+    [pscustomobject]@{ user_data=[pscustomobject]@{
+        '99'=[pscustomobject]@{ id=99; name='KnownUser'; display_name='Known' }
+        '100'=[pscustomobject]@{ id=100; name='Account Deleted'; display_name='Account Deleted' }
+    }},
+    [pscustomobject]@{ user_data=[pscustomobject]@{
+        '99'=[pscustomobject]@{ id=99; name='Account Deleted'; display_name='Account Deleted' }
+    }}
+)
+$profileCache = Get-EmbeddedPeople -Conversations $profileConversations
+if ($profileCache['99'].name -ne 'KnownUser' -or
+    -not (Test-PlaceholderProfile $profileCache['100']) -or
+    (Test-PlaceholderProfile $profileCache['99'])) {
+    throw 'Profile cache must reject placeholders without erasing usable names'
+}
+$script:ProfileCalls = New-Object System.Collections.ArrayList
+$originalPublicFunction = (Get-Command Invoke-PublicRobloxJson).ScriptBlock
+function Invoke-PublicRobloxJson {
+    param($Url, $Method='GET', $Body)
+    [void]$script:ProfileCalls.Add("$Method $Url")
+    if ($Method -eq 'POST') {
+        return [pscustomobject]@{ data=@(
+            [pscustomobject]@{ id=99; name='ValidUser'; displayName='Valid' },
+            [pscustomobject]@{ id=100; name='Account Deleted'; displayName='Account Deleted' },
+            [pscustomobject]@{ id=101; name='Account Deleted'; displayName='Account Deleted' }
+        )}
+    }
+    if ($Url -match '/users/100$') {
+        return [pscustomobject]@{ id=100; name='RestoredUser'; displayName='Restored' }
+    }
+    if ($Url -match '/users/101$') { throw 'Unavailable' }
+    throw "Unexpected user profile request: $Url"
+}
+try {
+    $recovered = Resolve-UsersBatch -UserIds @(99,100,101)
+    if ($recovered['99'].name -ne 'ValidUser' -or
+        $recovered['100'].name -ne 'RestoredUser' -or
+        $recovered['101'].name -ne 'Account Deleted') {
+        throw 'Public profile lookup must retry placeholders and preserve fallback on failure'
+    }
+    if ($script:ProfileCalls.Count -ne 3 -or
+        @($script:ProfileCalls | Where-Object { $_ -match '/users/99$' }).Count -ne 0) {
+        throw 'Only placeholders may generate individual public profile requests'
+    }
+}
+finally {
+    Set-Item -Path Function:Invoke-PublicRobloxJson -Value $originalPublicFunction
+}
 $script:Responses = @(
     [pscustomobject]@{ conversations=@([pscustomobject]@{ id=$null; source='friends'; type='one_to_one'; participant_user_ids=@(21,99); name='Friend' }, [pscustomobject]@{ id='a' }); nextCursor='more' },
     [pscustomobject]@{ conversations=@([pscustomobject]@{ id='b' }) },
@@ -179,6 +227,15 @@ $enriched = @(Get-AllMessages -ConversationId 'chat')
 if ($enriched.Count -ne 1 -or $enriched[0].content -ne 'Original' -or
     $enriched[0].extra -ne 'New' -or $enriched[0].senderUserId -ne 12) {
     throw 'Duplicate message IDs must preserve richer fields from either page'
+}
+$realName = Merge-MetadataValues -Old ([pscustomobject]@{
+    user_data=[pscustomobject]@{ '100'=[pscustomobject]@{ name='RealName'; display_name='Real Display' } }
+}) -New ([pscustomobject]@{
+    user_data=[pscustomobject]@{ '100'=[pscustomobject]@{ name='Account Deleted'; display_name='Account Deleted' } }
+})
+if ($realName.user_data.'100'.name -ne 'RealName' -or
+    $realName.user_data.'100'.display_name -ne 'Real Display') {
+    throw 'A later masked user profile must not erase an earlier verified username'
 }
 $emptyPreviewFallback = Get-PreviewMessage ([pscustomobject]@{
     preview_message=[pscustomobject]@{};

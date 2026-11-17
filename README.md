@@ -16,7 +16,7 @@ Then open **`viewer.html`**, click **Load archive**, and choose the generated JS
 
 If Python 3 is installed, open a Command Prompt in the archiver folder and run **`run_archiver.bat fast`** (or `py -3 app.py`). This uses the Python implementation, which downloads up to three independent conversations concurrently while **keeping the existing 520 ms minimum spacing between authenticated requests**. It can reduce elapsed time when Roblox replies slowly, without increasing the request rate. Actual speed depends on server latency and rate limits; it cannot bypass Roblox's 30-message pages.
 
-The normal double-click path still uses Windows PowerShell without extra software. Both implementations now reuse complete user profiles already present in conversation metadata, avoiding redundant profile API calls.
+The normal double-click path still uses Windows PowerShell without extra software. Both implementations reuse valid user profiles from conversation metadata and recheck `Account Deleted` placeholders against Roblox's public profile API. Python also overlaps up to three independent public-user fallback lookups if a batch lookup omits profiles; these do not increase the authenticated chat request rate.
 
 ## How to get your `.ROBLOSECURITY` value
 
@@ -47,6 +47,7 @@ For Chrome or Microsoft Edge:
 - Releases consumed Python download results after normalization to reduce memory usage;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
+- Preserves valid usernames when a later inventory reports `Account Deleted`, retries masked profiles with the public individual-user endpoint, and retains the available placeholder if recovery fails;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
 - Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
 - Preserves available embedded messages or a message preview when a known-ID conversation returns an empty page or its message-history request fails, and labels these as **preview-only** rather than implying that the full chat was retrieved;
