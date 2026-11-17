@@ -153,13 +153,17 @@ def refresh_session() -> None:
                             "Roblox rejected this .ROBLOSECURITY session while refreshing it (HTTP 401). "
                             "Copy the CURRENT cookie from the Roblox tab again; Roblox may have rotated it."
                         ) from retry_exc
-                    raise
+                    return
+                except (URLError, TimeoutError, OSError):
+                    return
         if exc.code == 401:
             raise AuthenticationError(
                 "Roblox rejected this .ROBLOSECURITY session while refreshing it (HTTP 401). "
                 "Copy the CURRENT cookie from the Roblox tab again; Roblox may have rotated it."
             ) from exc
         # A refresh failure alone should not block a normal authenticated GET.
+        return
+    except (URLError, TimeoutError, OSError):
         return
 
 

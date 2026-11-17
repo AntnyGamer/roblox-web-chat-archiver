@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -215,6 +215,26 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(set(lookup.call_args.args[0]), {99})
         self.assertEqual(writer.call_args.args[2]["21"]["name"], "Me")
         self.assertEqual(writer.call_args.args[2]["0"]["name"], "Roblox")
+
+    def test_optional_refresh_failures_do_not_abort_authenticated_requests(self):
+        with patch.object(app, "_open", side_effect=URLError("temporary outage")):
+            self.assertIsNone(app.refresh_session())
+        forbidden = HTTPError("https://auth.roblox.com/v1/session/refresh", 403,
+                              "Forbidden", {"x-csrf-token": "sample-token"}, io.BytesIO(b""))
+        still_forbidden = HTTPError("https://auth.roblox.com/v1/session/refresh", 403,
+                                    "Forbidden", {}, io.BytesIO(b""))
+        old_token = app._csrf_token
+        try:
+            with patch.object(app, "_open", side_effect=[forbidden, still_forbidden]) as request:
+                self.assertIsNone(app.refresh_session())
+                self.assertEqual(request.call_count, 2)
+            denied = HTTPError("https://auth.roblox.com/v1/session/refresh", 401,
+                               "Unauthorized", {}, io.BytesIO(b""))
+            with patch.object(app, "_open", side_effect=denied):
+                with self.assertRaises(app.AuthenticationError):
+                    app.refresh_session()
+        finally:
+            app._csrf_token = old_token
 
     def test_authenticated_request_refreshes_once_on_401(self):
         denied = HTTPError("https://apis.roblox.com/test", 401, "Unauthorized", {}, io.BytesIO(b"{}"))
