@@ -1,12 +1,11 @@
-name: Publish release ZIP
+name: Publish verified release ZIP
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_call:
     inputs:
       release_tag:
-        description: 'Tag to package when called by another workflow'
         required: true
         type: string
 
@@ -22,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+          ref: ${{ inputs.release_tag || github.ref_name }}
           persist-credentials: false
       - name: Test Windows PowerShell archiver offline
         shell: powershell
@@ -34,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+          ref: ${{ inputs.release_tag || github.ref_name }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -49,7 +48,7 @@ jobs:
       - name: Build exactly the six distribution files
         id: package
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           python - <<'PY'
           import os
@@ -58,7 +57,7 @@ jobs:
 
           files = ("app.py", "archiver.ps1", "LICENSE", "README.md", "run_archiver.bat", "viewer.html")
           tag = os.environ["RELEASE_TAG"]
-          if not tag or any(char in tag for char in "/\\"):
+          if not tag.startswith("v") or any(char in tag for char in "/\\"):
               raise ValueError("Invalid release tag")
           for file in files:
               if not Path(file).is_file():
@@ -74,13 +73,31 @@ jobs:
               output.write(f"path={name}\n")
           print(f"Created {name} with {len(files)} files")
           PY
-      - name: Attest ZIP provenance
+      - name: Attest ZIP provenance before publishing
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ steps.package.outputs.path }}
-      - name: Upload ZIP asset to the published GitHub release
+      - name: Publish release with ZIP already attached (immutable-safe)
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
           RELEASE_ZIP: ${{ steps.package.outputs.path }}
-        run: gh release upload "$RELEASE_TAG" "$RELEASE_ZIP" --clobber
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing $RELEASE_TAG release" >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          - Preserve conversations with missing/null IDs and any embedded message previews, without aborting the archive.
+          - Continue fetching message history for conversations with valid IDs.
+          - Handle null or alternate pagination cursors safely.
+          - Show incomplete-history warnings in the local viewer.
+          - Includes Python, PowerShell, and viewer offline tests.
+          - Attached ZIP contains exactly the six application and documentation files shown in the release, with build provenance attestation.
+
+          Note: Roblox does not expose complete message history for conversations without a server ID; those are explicitly marked incomplete.
+          NOTES
+          gh release create "$RELEASE_TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Roblox Web Chat Archiver $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')" = "false"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$RELEASE_ZIP"
