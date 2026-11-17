@@ -29,6 +29,20 @@ class ArchiverTests(unittest.TestCase):
         with self.assertRaises(app.AuthenticationError):
             app._normalize_cookie("  ")
 
+    def test_retry_after_is_bounded_and_handles_invalid_numbers(self):
+        self.assertEqual(app._retry_wait("999999999", 4), 120.0)
+        self.assertEqual(app._retry_wait("-8", 4, 2), 2)
+        self.assertEqual(app._retry_wait("nan", 4), 4)
+        self.assertEqual(app._retry_wait("Infinity", 4), 4)
+        self.assertEqual(app._retry_wait("not a number", 4), 4)
+        self.assertEqual(app._retry_wait(None, 4), 4)
+        denied = HTTPError("https://apis.roblox.com/test", 429, "Rate limited",
+                           {"Retry-After": "100000"}, io.BytesIO(b'{}'))
+        with patch.object(app, "_open", side_effect=[denied, io.BytesIO(b'{"ok":true}')]):
+            with patch.object(app.time, "sleep") as sleep:
+                self.assertEqual(app.request_json("https://apis.roblox.com/test"), {"ok": True})
+        sleep.assert_called_once_with(120.0)
+
     def test_public_requests_reuse_an_uncredentialed_opener(self):
         with patch.object(app, "_public_opener") as opener:
             opener.open.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'

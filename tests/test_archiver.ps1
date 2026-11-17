@@ -74,6 +74,11 @@ $loopStopped = $false
 try { $null = Get-AllConversations } catch { $loopStopped = $_.Exception.Message -match 'cursor' }
 if (-not $loopStopped) { throw 'Repeated cursor was not rejected' }
 if ((Get-NextCursor ([pscustomobject]@{ nextCursor='xyz' })) -ne 'xyz') { throw 'Cursor parsing failed' }
+if ((Get-RetrySeconds '999999999' 4) -ne 120 -or
+    (Get-RetrySeconds 'NaN' 4) -ne 4 -or
+    (Get-RetrySeconds 'Infinity' 4) -ne 4 -or
+    (Get-RetrySeconds '-1' 4) -ne 4 -or
+    (Get-RetrySeconds '1.4' 4) -ne 2) { throw 'Retry-After limits or invalid numbers failed' }
 $participants = @(Get-ParticipantIds ([pscustomobject]@{ participants = @(6, 4, 6, 'bad', 0, [pscustomobject]@{ targetId=2 }, 4) }))
 if (($participants -join ',') -ne '6,4,2') { throw 'Participant deduplication changed order or failed' }
 $numericTime = Get-MessageTime ([pscustomobject]@{ timestamp = 1700000000 })

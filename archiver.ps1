@@ -71,6 +71,16 @@ function Get-ErrorDetail {
     return ([string]$Payload)
 }
 
+function Get-RetrySeconds {
+    param($Header, [int]$Fallback)
+    $seconds = 0.0
+    if (-not [double]::TryParse([string]$Header, [ref]$seconds) -or
+        [double]::IsNaN($seconds) -or [double]::IsInfinity($seconds) -or $seconds -lt 1) {
+        return $Fallback
+    }
+    return [int][Math]::Min(120, [Math]::Ceiling($seconds))
+}
+
 function Wait-RequestPacing {
     $elapsed = ([DateTime]::UtcNow - $script:LastRequestUtc).TotalMilliseconds
     if ($elapsed -lt $MinRequestIntervalMs) {
@@ -213,11 +223,7 @@ function Invoke-RobloxJson {
                 throw ("Roblox refused the authenticated request (HTTP 403). Roblox said: {0}" -f $detail)
             }
             if ($status -eq 429 -and $attempt -lt $MaxRetries) {
-                $retryAfter = Get-ResponseHeaderValue $response 'Retry-After'
-                $wait = 0
-                if (-not [Int32]::TryParse([string]$retryAfter, [ref]$wait) -or $wait -lt 1) {
-                    $wait = [int][Math]::Min(30, [Math]::Pow(2, $attempt))
-                }
+                $wait = Get-RetrySeconds (Get-ResponseHeaderValue $response 'Retry-After') ([int][Math]::Min(30, [Math]::Pow(2, $attempt)))
                 Write-Host "`nRate limited by Roblox; retrying after $wait seconds..."
                 Start-Sleep -Seconds $wait
                 continue
@@ -275,11 +281,7 @@ function Invoke-PublicRobloxJson {
             if ($null -ne $response) { try { $status = [int]$response.StatusCode } catch {} }
 
             if ($status -eq 429 -and $attempt -lt $MaxRetries) {
-                $retryAfter = Get-ResponseHeaderValue $response 'Retry-After'
-                $wait = 0
-                if (-not [Int32]::TryParse([string]$retryAfter, [ref]$wait) -or $wait -lt 1) {
-                    $wait = [int][Math]::Min(20, [Math]::Pow(2, $attempt))
-                }
+                $wait = Get-RetrySeconds (Get-ResponseHeaderValue $response 'Retry-After') ([int][Math]::Min(20, [Math]::Pow(2, $attempt)))
                 Start-Sleep -Seconds $wait
                 continue
             }

@@ -11,6 +11,7 @@ import datetime as _dt
 import getpass
 from http.cookiejar import Cookie, CookieJar
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -75,6 +76,14 @@ def _error_message(payload: Any) -> str:
             if payload.get(key):
                 return str(payload[key])
     return str(payload)[:400]
+
+
+def _retry_wait(value: str | None, fallback: float, minimum: float = 1.0) -> float:
+    try:
+        seconds = float(value) if value is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
+    return min(120.0, max(minimum, seconds)) if math.isfinite(seconds) else fallback
 
 
 def _sleep_for_rate_limit() -> None:
@@ -222,11 +231,7 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
                     f"Roblox refused the authenticated request (HTTP 403). Roblox said: {detail}"
                 ) from exc
             if exc.code == 429 and attempt < MAX_RETRIES:
-                retry_after = exc.headers.get("Retry-After")
-                try:
-                    wait = max(2.0, float(retry_after)) if retry_after else min(30.0, 2 ** attempt)
-                except ValueError:
-                    wait = min(30.0, 2 ** attempt)
+                wait = _retry_wait(exc.headers.get("Retry-After"), min(30.0, 2 ** attempt), 2.0)
                 print(f"\nRate limited by Roblox; retrying after {wait:g}s...", flush=True)
                 time.sleep(wait)
                 continue
@@ -268,11 +273,7 @@ def request_public_json(url: str, method: str = "GET", body: Any = None) -> Any:
                     raise ArchiverError(f"Roblox public API returned non-JSON data: {url}") from exc
         except HTTPError as exc:
             if exc.code == 429 and attempt < MAX_RETRIES:
-                retry_after = exc.headers.get("Retry-After")
-                try:
-                    wait = max(1.0, float(retry_after)) if retry_after else min(20.0, 2 ** attempt)
-                except ValueError:
-                    wait = min(20.0, 2 ** attempt)
+                wait = _retry_wait(exc.headers.get("Retry-After"), min(20.0, 2 ** attempt))
                 time.sleep(wait)
                 continue
             if 500 <= exc.code <= 599 and attempt < MAX_RETRIES:
