@@ -23,7 +23,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
-APP_NAME = "Roblox Web Chat Archiver v1.1.0 (2026 refresh)"
+APP_NAME = "Roblox Web Chat Archiver v1.1.1 (2026 refresh)"
 CHAT_BASE = "https://apis.roblox.com/platform-chat-api/v1"
 USERS_BASE = "https://users.roblox.com/v1"
 REQUEST_TIMEOUT = 30
