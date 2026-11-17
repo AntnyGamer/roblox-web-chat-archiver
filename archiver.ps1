@@ -604,6 +604,12 @@ try {
             if ($embedded -is [array] -and @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
                 $messages = @($embedded)
             }
+            if (@($messages).Count -eq 0) {
+                $preview = Get-PropertyValue $convo @('preview_message','previewMessage') $null
+                if ($null -ne $preview -and $preview -isnot [string] -and $preview -isnot [ValueType] -and $preview -isnot [array]) {
+                    $messages = @($preview)
+                }
+            }
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$archiveError })
         }
         else {

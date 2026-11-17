@@ -663,6 +663,10 @@ def main() -> int:
             error = "Roblox returned this conversation without an ID; full message history cannot be requested."
             embedded = raw_convo.get("messages")
             messages = embedded if isinstance(embedded, list) and all(isinstance(m, dict) for m in embedded) else []
+            if not messages:
+                preview = raw_convo.get("preview_message") or raw_convo.get("previewMessage")
+                if isinstance(preview, dict):
+                    messages = [preview]
             failures.append({"conversationId": cid, "title": str(title), "error": error})
             status = "missing-id"
         else:

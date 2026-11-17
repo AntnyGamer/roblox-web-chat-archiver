@@ -250,6 +250,8 @@ class ArchiverTests(unittest.TestCase):
     def test_main_preserves_idless_conversation_and_fetches_known_ids(self):
         raw = {"__missing-id-p1-i1": {"id": None, "name": "No ID",
                     "messages": [{"sender_user_id": 11, "content": "preview"}]},
+               "__missing-id-p1-i2": {"id": None, "name": "Preview only",
+                    "preview_message": {"sender_user_id": 12, "content": "preview fallback"}},
                "known": {"id": "known", "name": "Known conversation"}}
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
@@ -270,9 +272,10 @@ class ArchiverTests(unittest.TestCase):
         unknown = archive["conversations"]["__missing-id-p1-i1"]
         self.assertEqual(unknown["_archiveStatus"], "missing-id")
         self.assertEqual(unknown["messages"][0]["content"], "preview")
+        self.assertEqual(archive["conversations"]["__missing-id-p1-i2"]["messages"][0]["content"], "preview fallback")
         self.assertEqual(archive["conversations"]["known"]["messages"][0]["content"], "full")
-        self.assertEqual(archive["archiveMeta"]["missingIdConversations"], 1)
-        self.assertEqual(len(archive["archiveMeta"]["failedConversations"]), 1)
+        self.assertEqual(archive["archiveMeta"]["missingIdConversations"], 2)
+        self.assertEqual(len(archive["archiveMeta"]["failedConversations"]), 2)
 
     def test_main_saves_partial_conversation_list_and_marks_archive(self):
         conversation = {"id": "partial", "name": "Only known"}

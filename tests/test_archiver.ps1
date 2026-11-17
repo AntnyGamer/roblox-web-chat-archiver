@@ -58,6 +58,11 @@ if ($script:ResponseIndex -ne 2 -or $script:LastQuery.include_user_data -ne 'tru
 if ((Get-ConversationId ([pscustomobject]@{ id=$null; conversationId='other-id' })) -ne 'other-id') {
     throw 'Conversation ID lookup must fall back when the primary ID is null'
 }
+$sourceForMissingId = Get-Content -LiteralPath $scriptPath -Raw
+if ($sourceForMissingId -notmatch "preview_message','previewMessage" -or
+    $sourceForMissingId -notmatch "\$archiveStatus = 'missing-id'") {
+    throw 'ID-less conversation archiving must preserve embedded previews and mark missing IDs'
+}
 $script:Responses = @([pscustomobject]@{ messages=@([pscustomobject]@{ content='saved message' }); nextCursor='page-2' })
 $script:ResponseIndex = 0
 $partialSaved = $false
