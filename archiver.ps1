@@ -322,9 +322,7 @@ function Invoke-PublicRobloxJson {
 function Get-NextCursor {
     param($Data)
     foreach ($name in @('next_cursor','nextCursor','nextPageCursor')) {
-        $value = Get-PropertyValue $Data @($name) $null
-        if ($null -eq $value) { continue }
-        $text = ([string]$value).Trim()
+        $text = ([string](Get-PropertyValue $Data @($name))).Trim()
         if ($text) { return $text }
     }
     return $null
