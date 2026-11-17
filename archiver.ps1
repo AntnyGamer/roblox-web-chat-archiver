@@ -1,4 +1,4 @@
-﻿# Roblox Web Chat Archiver - 2026 compatibility refresh
+# Roblox Web Chat Archiver - 2026 compatibility refresh
 # Windows PowerShell 5.1+ compatible; no third-party modules required.
 
 $ErrorActionPreference = 'Stop'
@@ -341,14 +341,166 @@ function Get-PreviewMessage {
     param($Convo)
     foreach ($name in @('preview_message','previewMessage')) {
         $value = Get-PropertyValue $Convo @($name) $null
-        if ($null -ne $value -and $value -isnot [string] -and $value -isnot [ValueType] -and $value -isnot [array]) {
+        if ($null -ne $value -and $value -isnot [string] -and $value -isnot [ValueType] -and $value -isnot [array] -and
+            @($value.PSObject.Properties).Count -gt 0) {
             return $value
         }
     }
     return $null
 }
 
+function Get-AvailableMessages {
+    param($Convo)
+    $embedded = @(Get-ItemArray $Convo @('messages'))
+    if ($embedded.Count -gt 0 -and
+        @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
+        return $embedded
+    }
+    $preview = Get-PreviewMessage $Convo
+    if ($null -ne $preview) { return $preview }
+}
+
+function Merge-MetadataValues {
+    param($Old, $New, [string]$Field = '')
+    if ($null -eq $New) { return $Old }
+    if ($New -is [string] -and $New.Length -eq 0) { return $Old }
+    if ($New -is [array]) {
+        if ($New.Count -eq 0) { return ,$Old }
+        if ($Old -is [array] -and $Field -eq 'messages') {
+            $retained = New-Object System.Collections.ArrayList
+            $positions = @{}
+            $seenWithoutIds = @{}
+            foreach ($message in $Old) {
+                $mid = Get-PropertyValue $message @('id','messageId','message_id') $null
+                if ($null -ne $mid -and [string]$mid -ne '') {
+                    $positions[[string]$mid] = $retained.Count
+                } else {
+                    $signature = ConvertTo-Json -InputObject $message -Depth 100 -Compress
+                    if ($seenWithoutIds.ContainsKey($signature)) { $seenWithoutIds[$signature]++ }
+                    else { $seenWithoutIds[$signature] = 1 }
+                }
+                [void]$retained.Add($message)
+            }
+            foreach ($message in $New) {
+                $mid = Get-PropertyValue $message @('id','messageId','message_id') $null
+                if ($null -ne $mid -and [string]$mid -ne '') {
+                    $key = [string]$mid
+                    if ($positions.ContainsKey($key)) {
+                        $index = [int]$positions[$key]
+                        $retained[$index] = Merge-MetadataValues -Old $retained[$index] -New $message
+                        continue
+                    }
+                    $positions[$key] = $retained.Count
+                } else {
+                    $signature = ConvertTo-Json -InputObject $message -Depth 100 -Compress
+                    if ($seenWithoutIds.ContainsKey($signature) -and $seenWithoutIds[$signature] -gt 0) {
+                        $seenWithoutIds[$signature]--
+                        continue
+                    }
+                }
+                [void]$retained.Add($message)
+            }
+            return ,@($retained.ToArray())
+        }
+        if ($Old -is [array] -and $Field -in @('participant_user_ids','participantUserIds','participants')) {
+            $unique = New-Object System.Collections.ArrayList
+            foreach ($member in $Old) { [void]$unique.Add($member) }
+            foreach ($member in $New) {
+                if ($member -notin $unique) { [void]$unique.Add($member) }
+            }
+            return ,@($unique.ToArray())
+        }
+        return ,$New
+    }
+    if ($Old -is [pscustomobject] -and $New -is [pscustomobject]) {
+        if ($Field -in @('preview_message','previewMessage')) {
+            $oldId = Get-PropertyValue $Old @('id','messageId','message_id') $null
+            $newId = Get-PropertyValue $New @('id','messageId','message_id') $null
+            if (-not ($oldId -and $newId -and [string]$oldId -eq [string]$newId)) {
+                $oldContent = [string](Get-PropertyValue $Old @('content','text','message') '')
+                $newContent = [string](Get-PropertyValue $New @('content','text','message') '')
+                if ($newContent -or -not $oldContent) { return $New }
+                return $Old
+            }
+        }
+        $merged = [ordered]@{}
+        foreach ($property in $Old.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+        foreach ($property in $New.PSObject.Properties) {
+            if ($merged.Contains($property.Name)) {
+                $merged[$property.Name] = Merge-MetadataValues -Old $merged[$property.Name] -New $property.Value -Field $property.Name
+            }
+            else { $merged[$property.Name] = $property.Value }
+        }
+        return [pscustomobject]$merged
+    }
+    return $New
+}
+
+function Merge-ConversationSnapshots {
+    param([object[]]$Snapshots)
+    $combined = [ordered]@{}
+    $identities = @{}
+    $collision = 0
+    foreach ($snapshot in $Snapshots) {
+        foreach ($entry in $snapshot.GetEnumerator()) {
+            $item = $entry.Value
+            $cid = Get-ConversationId $item
+            if ($cid) { $dest = $cid }
+            else {
+                $people = @(Get-ParticipantIds $item | Sort-Object)
+                $source = [string](Get-PropertyValue $item @('source') '')
+                $type = [string](Get-PropertyValue $item @('type') '')
+                if ($people.Count -gt 0 -and $source -eq 'friends' -and $type -eq 'one_to_one') {
+                    $identity = $source + '|' + $type + '|' + ($people -join ',')
+                } else {
+                    $identity = $source + '|' + $type + '|' +
+                        [string](Get-PropertyValue $item @('created_at') '') + '|' +
+                        [string](Get-PropertyValue $item @('name','title') '') + '|' + [string]$entry.Key
+                }
+                $dest = $identities[$identity]
+                if (-not $dest) {
+                    $dest = [string]$entry.Key
+                    while ($combined.Contains($dest)) {
+                        $collision++
+                        $dest = '__missing-id-verified-{0}' -f $collision
+                    }
+                    $identities[$identity] = $dest
+                }
+            }
+            if (-not $combined.Contains($dest)) {
+                $combined[$dest] = $item
+                continue
+            }
+            $combined[$dest] = Merge-MetadataValues $combined[$dest] $item
+        }
+    }
+    return $combined
+}
+
 function Get-AllConversations {
+    param([switch]$Verify)
+    if ($Verify) {
+        $snapshots = New-Object System.Collections.ArrayList
+        $errors = New-Object System.Collections.ArrayList
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            try { [void]$snapshots.Add((Get-AllConversations)) }
+            catch {
+                if ($_.Exception.Message -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') { throw }
+                $partial = $_.Exception.Data['PartialConversations']
+                if ($null -ne $partial -and $partial.Count -gt 0) { [void]$snapshots.Add($partial) }
+                [void]$errors.Add(('Pass {0}: {1}' -f $attempt, $_.Exception.Message))
+            }
+        }
+        if ($snapshots.Count -eq 0) { throw ($errors -join '; ') }
+        $combined = Merge-ConversationSnapshots -Snapshots @($snapshots.ToArray())
+        if ($errors.Count -gt 0) {
+            $error = New-Object System.Exception(($errors -join '; '))
+            $error.Data['PartialConversations'] = $combined
+            throw $error
+        }
+        return $combined
+    }
+
     $result = [ordered]@{}
     $cursor = $null
     $seen = @{}
@@ -369,7 +521,8 @@ function Get-AllConversations {
             for ($index = 0; $index -lt $items.Count; $index++) {
                 $cid = Get-ConversationId $items[$index]
                 if (-not $cid) { $cid = '__missing-id-p{0}-i{1}' -f $page, ($index + 1) }
-                $result[$cid] = $items[$index]
+                if ($result.Contains($cid)) { $result[$cid] = Merge-MetadataValues $result[$cid] $items[$index] }
+                else { $result[$cid] = $items[$index] }
             }
             $next = Get-NextCursor $data
             if ($next -and $seen.ContainsKey($next)) {
@@ -397,6 +550,7 @@ function Get-AllMessages {
     param([Parameter(Mandatory=$true)][string]$ConversationId)
 
     $all = New-Object System.Collections.ArrayList
+    $seenMessageIds = @{}
     $cursor = $null
     $seen = @{}
     while ($true) {
@@ -419,7 +573,19 @@ function Get-AllMessages {
             }
             throw
         }
-        foreach ($item in $items) { [void]$all.Add($item) }
+        foreach ($item in $items) {
+            $mid = Get-PropertyValue $item @('id','messageId','message_id') $null
+            if ($null -ne $mid -and [string]$mid -ne '') {
+                $marker = [string]$mid
+                if ($seenMessageIds.ContainsKey($marker)) {
+                    $position = [int]$seenMessageIds[$marker]
+                    $all[$position] = Merge-MetadataValues $all[$position] $item
+                    continue
+                }
+                $seenMessageIds[$marker] = $all.Count
+            }
+            [void]$all.Add($item)
+        }
 
         $next = Get-NextCursor $data
         if (-not $next) { break }
@@ -494,6 +660,30 @@ function Get-CreatedById {
     $id = 0L
     if ($null -ne $value -and [Int64]::TryParse([string]$value, [ref]$id)) { return $id }
     return 0L
+}
+
+function Get-EmbeddedPeople {
+    param([object[]]$Conversations)
+    $found = [ordered]@{}
+    foreach ($convo in $Conversations) {
+        $embedded = Get-PropertyValue $convo @('user_data','userData') $null
+        if ($null -eq $embedded -or $embedded -is [array]) { continue }
+        foreach ($profile in $embedded.PSObject.Properties) {
+            $entry = $profile.Value
+            if ($null -eq $entry -or $entry -is [string] -or $entry -is [ValueType]) { continue }
+            $candidate = Get-PropertyValue $entry @('id','userId') $profile.Name
+            $uid = 0L
+            if (-not [Int64]::TryParse([string]$candidate, [ref]$uid) -or $uid -le 0) { continue }
+            $name = [string](Get-PropertyValue $entry @('name') '')
+            $display = [string](Get-PropertyValue $entry @('display_name','displayName') '')
+            if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($display)) { continue }
+            $verified = [bool](Get-PropertyValue $entry @('is_verified','hasVerifiedBadge') $false)
+            $found[[string]$uid] = [ordered]@{
+                hasVerifiedBadge=$verified; name=$name; displayName=$display; targetId=$uid
+            }
+        }
+    }
+    return $found
 }
 
 function Resolve-UsersBatch {
@@ -577,7 +767,7 @@ try {
 
     Write-Host "`nFetching conversations..."
     $conversationListError = $null
-    try { $rawConversations = Get-AllConversations }
+    try { $rawConversations = Get-AllConversations -Verify }
     catch {
         $partial = $_.Exception.Data['PartialConversations']
         if ($null -eq $partial -or $partial.Count -eq 0) { throw }
@@ -611,14 +801,7 @@ try {
         if (-not (Get-ConversationId $convo)) {
             $archiveStatus = 'missing-id'
             $archiveError = 'Roblox returned this conversation without an ID; full message history cannot be requested.'
-            $embedded = Get-PropertyValue $convo @('messages') @()
-            if ($embedded -is [array] -and @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
-                $messages = @($embedded)
-            }
-            if (@($messages).Count -eq 0) {
-                $preview = Get-PreviewMessage $convo
-                if ($null -ne $preview) { $messages = @($preview) }
-            }
+            $messages = @(Get-AvailableMessages $convo)
             [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$archiveError })
         }
         else {
@@ -644,15 +827,19 @@ try {
         if (-not $archiveStatus -and @($messages).Count -eq 0) {
             $archiveStatus = 'metadata-only-empty-response'
         }
+        if ($archiveStatus -in @('metadata-only-error','metadata-only-empty-response')) {
+            $messages = @(Get-AvailableMessages $convo)
+            if ($messages.Count -gt 0) {
+                $archiveStatus = 'preview-only'
+            }
+        }
 
         $outMessages = New-Object System.Collections.ArrayList
         foreach ($message in @($messages)) {
             $senderId = Get-MessageSenderId $message
             $obj = [ordered]@{}
             foreach ($property in $message.PSObject.Properties) {
-                if ($property.Name -notin @('sender_user_id','senderUserId','created_at','createdAt')) {
-                    $obj[$property.Name] = $property.Value
-                }
+                $obj[$property.Name] = $property.Value
             }
             $obj['senderTargetId'] = $senderId
             $obj['sent'] = Get-MessageTime $message
@@ -663,7 +850,7 @@ try {
 
         $outConvo = [ordered]@{}
         foreach ($property in $convo.PSObject.Properties) {
-            if ($property.Name -ne 'name') { $outConvo[$property.Name] = $property.Value }
+            $outConvo[$property.Name] = $property.Value
         }
         $outConvo['id'] = Get-PropertyValue $convo @('id') $cid
         $outConvo['title'] = $title
@@ -684,8 +871,14 @@ try {
     }
 
     [void]$ids.Remove([string]$myId)
-    Write-Host ("`nResolving {0} users in batches..." -f $ids.Count)
-    $people = Resolve-UsersBatch -UserIds @($ids.Values)
+    $people = Get-EmbeddedPeople -Conversations @($rawConversations.Values)
+    $missing = New-Object System.Collections.ArrayList
+    foreach ($uid in $ids.Values) {
+        if (-not $people.Contains([string]$uid)) { [void]$missing.Add([Int64]$uid) }
+    }
+    Write-Host ("Resolving {0} missing user profiles in batches ({1} reused)..." -f $missing.Count, ($ids.Count - $missing.Count))
+    $lookups = Resolve-UsersBatch -UserIds @($missing.ToArray())
+    foreach ($person in $lookups.GetEnumerator()) { $people[$person.Key] = $person.Value }
     $myDisplay = [string](Get-PropertyValue $me @('displayName','name') $myName)
     $myVerified = [bool](Get-PropertyValue $me @('hasVerifiedBadge') $false)
     $people[[string]$myId] = [ordered]@{ hasVerifiedBadge=$myVerified; name=$myName; displayName=$myDisplay; targetId=$myId }
@@ -708,6 +901,7 @@ try {
             archiver = $AppName
             conversationCount = $normalized.Count
             metadataOnlyConversations = $metadataOnly
+            previewOnlyConversations = @($normalized.Values | Where-Object { $_['_archiveStatus'] -eq 'preview-only' }).Count
             failedConversations = @($failures)
             missingIdConversations = @($normalized.Values | Where-Object { $_['_archiveStatus'] -eq 'missing-id' }).Count
         }
@@ -757,3 +951,4 @@ finally {
     $script:CsrfToken = $null
     $script:WebSession = $null
 }
+

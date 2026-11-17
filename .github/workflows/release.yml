@@ -93,16 +93,20 @@ jobs:
             exit 1
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          - Preserve conversations with missing/null IDs and any embedded message previews, without aborting the archive.
-          - Continue fetching message history for conversations with valid IDs.
-          - Handle null or alternate pagination cursors safely.
-          - Show incomplete-history warnings in the local viewer.
-          - Includes Python, PowerShell, and viewer offline tests.
+          Application version: **v2.0.0**. This revised distribution uses tag **v2.0.0-r2**; the original v2.0.0 tag is unchanged.
+
+          - Preserve the union of two current-run conversation inventories, original metadata, nested profiles, overlapping message pages, and distinct ID-less messages.
+          - Preserve accessible embedded messages and previews when full history is unavailable, with clear completeness warnings.
+          - Reuse embedded user profiles and offer `run_archiver.bat fast` for three concurrent Python downloads with the same 520 ms global request pacing.
+          - Release consumed download results sooner, stop retry/pacing waits on cancellation, and compute viewer activity dates once before sorting.
+          - Remove redundant cancellation code and participant-array copies; keep both dependency-free implementations.
+          - Verify Python, Windows PowerShell, viewer, and release-package behavior offline before publishing.
           - Attached ZIP contains exactly the six application and documentation files shown in the release, with build provenance attestation.
 
-          Note: Roblox does not expose complete message history for conversations without a server ID; those are explicitly marked incomplete.
+          Roblox may not expose complete history, including conversations without server IDs. These records are marked incomplete. Live authenticated Roblox behavior and download speed were not tested for this release.
           NOTES
-          gh release create "$RELEASE_TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "Roblox Web Chat Archiver $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
+          gh release create "$RELEASE_TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "Roblox Web Chat Archiver v2.0.0 (revision 2)" --notes-file "$RUNNER_TEMP/release-notes.md" --latest
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = "$RELEASE_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')" = "false"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$RELEASE_ZIP"
+

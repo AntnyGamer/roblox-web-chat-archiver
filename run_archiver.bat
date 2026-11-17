@@ -3,6 +3,8 @@ setlocal
 cd /d "%~dp0"
 title Roblox Web Chat Archiver v2.0.0
 
+if /I "%~1"=="fast" goto :fast
+
 where powershell.exe >nul 2>nul
 if %errorlevel%==0 (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0archiver.ps1"
@@ -25,6 +27,24 @@ echo.
 echo Neither Windows PowerShell nor Python 3 was found.
 echo This should be very unusual on Windows 10/11.
 echo.
+goto :done
+
+:fast
+where py >nul 2>nul
+if %errorlevel%==0 (
+    py -3 app.py
+    goto :done
+)
+where python >nul 2>nul
+if %errorlevel%==0 (
+    python app.py
+    goto :done
+)
+echo.
+echo Fast mode requires Python 3.
+echo You can run the standard PowerShell archiver without Python.
+echo.
+goto :done
 
 :done
 echo.
