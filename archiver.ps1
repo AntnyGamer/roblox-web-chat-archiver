@@ -664,7 +664,7 @@ try {
     $safeName = [Regex]::Replace($myName, '[^A-Za-z0-9 _-]', '')
     if (-not $safeName) { $safeName = 'user' }
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
-    $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}.json" -f $myId, $safeName, $stamp)
+    $path = Join-Path (Get-Location) ("roblox-chat-archive-{0}-{1}-{2}-{3}.json" -f $myId, $safeName, $stamp, [Guid]::NewGuid().ToString('N'))
     $tmp = $path + '.tmp'
     if ($conversationListError) {
         $payload.archiveMeta['conversationListIncomplete'] = $true
@@ -672,7 +672,7 @@ try {
     }
     $json = $payload | ConvertTo-Json -Depth 100
     [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $path -Force
+    Move-Item -LiteralPath $tmp -Destination $path
 
     Write-Host "`nDone."
     Write-Host "Saved: $path"

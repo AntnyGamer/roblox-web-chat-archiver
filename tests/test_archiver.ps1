@@ -100,4 +100,11 @@ $numericMs = Get-MessageTime ([pscustomobject]@{ timestamp = 1700000000000L })
 if ($numericTime -ne '2023-11-14T22:13:20.0000000Z' -or $numericMs -ne $numericTime) { throw 'Unix timestamps were not normalized consistently' }
 $isoTime = Get-MessageTime ([pscustomobject]@{ timestamp = [DateTime]::SpecifyKind([DateTime]::Parse('2026-01-01T00:00:00'),[DateTimeKind]::Utc) })
 if ($isoTime -ne '2026-01-01T00:00:00.0000000Z') { throw 'PowerShell DateTime values must serialize as portable UTC dates' }
+$source = Get-Content $scriptPath -Raw
+if ($source -match 'Move-Item -LiteralPath \$tmp -Destination \$path -Force') {
+    throw 'Final archive move must not forcibly replace an existing backup'
+}
+if ($source -notmatch '\[Guid\]::NewGuid\(\)') {
+    throw 'Archive filenames must have a unique suffix'
+}
 Write-Host 'PASS: PowerShell syntax, final pages, and cursor loop safeguards'

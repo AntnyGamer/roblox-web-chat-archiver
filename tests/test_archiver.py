@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -209,6 +210,20 @@ class ArchiverTests(unittest.TestCase):
             self.assertFalse(result.with_suffix(result.suffix + ".tmp").exists())
             self.assertEqual(archive["archiveMeta"]["failedConversations"][0]["error"], "transient error")
             self.assertEqual(archive["conversations"]["first"]["messages"][0]["content"], "hello")
+
+    def test_consecutive_archive_exports_preserve_both_private_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user = {"id": 7, "name": "Example"}
+            first = app.write_archive(root, user, {}, {"original": {"messages": [{"content": "old"}]}}, [])
+            second = app.write_archive(root, user, {}, {"new": {"messages": [{"content": "new"}]}}, [])
+            self.assertNotEqual(first, second, "exports must never share predictable second-resolution paths")
+            self.assertEqual(json.loads(first.read_text(encoding="utf-8"))["conversations"]["original"]["messages"][0]["content"], "old")
+            self.assertEqual(json.loads(second.read_text(encoding="utf-8"))["conversations"]["new"]["messages"][0]["content"], "new")
+            self.assertEqual(len(list(root.glob("*.tmp"))), 0, "temporary files must be cleaned up")
+            if os.name == "posix":
+                self.assertEqual(first.stat().st_mode & 0o777, 0o600, "chat archives must be private on Unix")
+                self.assertEqual(second.stat().st_mode & 0o777, 0o600)
 
     def test_main_saves_partial_conversation_list_and_marks_archive(self):
         conversation = {"id": "partial", "name": "Only known"}

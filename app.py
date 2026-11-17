@@ -14,9 +14,11 @@ import json
 import math
 import os
 from pathlib import Path
+import tempfile
 import time
 import traceback
 from typing import Any, Iterable
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
@@ -562,7 +564,7 @@ def write_archive(
 ) -> Path:
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = "".join(c for c in str(current_user.get("name", "user")) if c.isalnum() or c in "-_ ").strip() or "user"
-    path = output_dir / f"roblox-chat-archive-{current_user['id']}-{safe_name}-{stamp}.json"
+    path = output_dir / f"roblox-chat-archive-{current_user['id']}-{safe_name}-{stamp}-{uuid.uuid4().hex}.json"
 
     metadata_only = sum(1 for convo in conversations.values() if not convo.get("messages"))
     payload = {
@@ -582,11 +584,16 @@ def write_archive(
         payload["archiveMeta"]["conversationListIncomplete"] = True
         payload["archiveMeta"]["conversationListError"] = conversation_list_error
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
-    return path
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_dir, suffix=".tmp", delete=False) as f:
+            tmp = Path(f.name)
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        tmp.replace(path)
+        return path
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def main() -> int:
