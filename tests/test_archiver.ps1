@@ -43,6 +43,144 @@ $script:ResponseIndex = 0
 $messages = @(Get-AllMessages -ConversationId 'first')
 if ($messages.Count -ne 2 -or $messages[1].content -ne 'last message') { throw 'Final message page was dropped' }
 if ($script:LastQuery.pageSize -ne 30) { throw 'Message requests must ask for 30 items per page' }
+$script:Responses = @(
+    [pscustomobject]@{ messages=@([pscustomobject]@{ id='same'; content='A' }); nextCursor='another' },
+    [pscustomobject]@{ messages=@([pscustomobject]@{ id='same'; content='A' }, [pscustomobject]@{ id='different'; content='B' }) }
+)
+$script:ResponseIndex = 0
+$uniqueMessages = @(Get-AllMessages -ConversationId 'test')
+if ($uniqueMessages.Count -ne 2 -or $uniqueMessages[1].id -ne 'different') { throw 'Overlapping message pages were not deduplicated' }
+$cached = Get-EmbeddedPeople -Conversations @([pscustomobject]@{
+    user_data=[pscustomobject]@{
+        '99'=[pscustomobject]@{ id=99; name='Known'; display_name='Friend'; is_verified=$true }
+        '100'=[pscustomobject]@{ id=100; name='Incomplete'; display_name='' }
+    }
+})
+if ($cached.Count -ne 1 -or -not $cached.Contains('99') -or
+    $cached['99'].name -ne 'Known' -or $cached['99'].displayName -ne 'Friend' -or
+    -not $cached['99'].hasVerifiedBadge) {
+    throw 'Embedded user profiles should be reused only when complete'
+}
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id=$null; source='friends'; type='one_to_one'; participant_user_ids=@(21,99); name='Friend' }, [pscustomobject]@{ id='a' }); nextCursor='more' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='b' }) },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='a'; name='Updated' }); nextCursor='more' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id=$null; source='friends'; type='one_to_one'; participant_user_ids=@(99,21); name='Friend' }, [pscustomobject]@{ id='c' }) }
+)
+$script:ResponseIndex = 0
+$verified = Get-AllConversations -Verify
+if ($verified.Count -ne 4 -or -not $verified.Contains('a') -or -not $verified.Contains('b') -or
+    -not $verified.Contains('c') -or -not $verified.Contains('__missing-id-p1-i1')) {
+    throw 'Verification passes did not preserve the union of ID-less friends and real chats'
+}
+if ($verified['a'].name -ne 'Updated' -or $script:ResponseIndex -ne 4) { throw 'Verification did not merge the second pass correctly' }
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; messages=@(
+        [pscustomobject]@{ id='first'; content='old'; meta=[pscustomobject]@{ sender='Alice' } },
+        [pscustomobject]@{ id='second'; content='second' }) }); nextCursor='next' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; messages=@(
+        [pscustomobject]@{ id='first'; content=$null; meta=[pscustomobject]@{ sent='2026' } },
+        [pscustomobject]@{ id='third'; content='third' }) }) }
+)
+$script:ResponseIndex = 0
+$unionMessages = (Get-AllConversations)['chat'].messages
+if ($unionMessages.Count -ne 3 -or ($unionMessages.id -join ',') -ne 'first,second,third' -or
+    $unionMessages[0].content -ne 'old' -or $unionMessages[0].meta.sender -ne 'Alice' -or
+    $unionMessages[0].meta.sent -ne '2026') {
+    throw 'Overlapping inventory passes must retain distinct embedded messages'
+}
+$multiplicity = (Merge-ConversationSnapshots -Snapshots @(
+    ([ordered]@{ chat=[pscustomobject]@{ id='chat'; messages=@([pscustomobject]@{ content='same' }) } }),
+    ([ordered]@{ chat=[pscustomobject]@{ id='chat'; messages=@([pscustomobject]@{ content='same' },
+                                                               [pscustomobject]@{ content='same' }) } })
+))['chat'].messages
+if (@($multiplicity).Count -ne 2) {
+    throw 'Identical ID-less messages in the same snapshot must preserve their multiplicity'
+}
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; participant_user_ids=@(12,21) }); nextCursor='next' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; participant_user_ids=@(21,99) }) }
+)
+$script:ResponseIndex = 0
+$members = Get-AllConversations
+if (($members['chat'].participant_user_ids -join ',') -ne '12,21,99') {
+    throw 'Repeated pages may not erase existing participant IDs'
+}
+$separateGroups = Merge-ConversationSnapshots -Snapshots @(
+    ([ordered]@{ '__missing-id-p1-i1'=[pscustomobject]@{ source='friends'; type='group'; participant_user_ids=@(12,21); created_at='2025' } }),
+    ([ordered]@{ '__missing-id-p1-i1'=[pscustomobject]@{ source='friends'; type='group'; participant_user_ids=@(12,21); created_at='2026' } })
+)
+if ($separateGroups.Count -ne 2) { throw 'Different ID-less group chats cannot be collapsed by member set' }
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@([pscustomobject]@{
+        id='same'; user_data=[pscustomobject]@{
+            '99'=[pscustomobject]@{ display_name='Best friend'; is_verified=$true }
+        }
+        preview_message=[pscustomobject]@{ content='Original'; sent='old' }
+    }); nextCursor='next' },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{
+        id='same'; user_data=[pscustomobject]@{
+            '99'=[pscustomobject]@{ display_name=$null; combined_name='Friend' }
+        }
+        preview_message=[pscustomobject]@{ content=$null; sent='new' }
+    }) }
+)
+$script:ResponseIndex = 0
+$combinedMetadata = Get-AllConversations
+$profile = $combinedMetadata['same'].user_data.'99'
+if ($combinedMetadata.Count -ne 1 -or $profile.display_name -ne 'Best friend' -or
+    -not $profile.is_verified -or $profile.combined_name -ne 'Friend' -or
+    $combinedMetadata['same'].preview_message.content -ne 'Original' -or
+    $combinedMetadata['same'].preview_message.sent -ne 'old') {
+    throw 'Repeated conversations must preserve nested user details and previews'
+}
+$script:Responses = @(
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; preview_message=[pscustomobject]@{
+        id='old'; content='old'; sent='2020' } }) },
+    [pscustomobject]@{ conversations=@([pscustomobject]@{ id='chat'; preview_message=[pscustomobject]@{
+        id='new'; content='new'; sent='2026' } }) }
+)
+$script:ResponseIndex = 0
+$previewReplacement = (Merge-ConversationSnapshots -Snapshots @(
+    ([ordered]@{ chat=[pscustomobject]@{ id='chat'; preview_message=[pscustomobject]@{ id='old'; content='old'; sent='2020' } } }),
+    ([ordered]@{ chat=[pscustomobject]@{ id='chat'; preview_message=[pscustomobject]@{ id='new'; content='new'; sent='2026' } } })
+))['chat'].preview_message
+if ($previewReplacement.content -ne 'new' -or $previewReplacement.sent -ne '2026' -or
+    $previewReplacement.id -ne 'new') {
+    throw 'Different previews must remain atomic rather than mixing text and timestamps'
+}
+$script:Responses = @(
+    [pscustomobject]@{ messages=@([pscustomobject]@{ id='same'; content='Original'; senderUserId=12 }); nextCursor='next' },
+    [pscustomobject]@{ messages=@([pscustomobject]@{ id='same'; content=$null; senderUserId=$null; extra='New' }) }
+)
+$script:ResponseIndex = 0
+$enriched = @(Get-AllMessages -ConversationId 'chat')
+if ($enriched.Count -ne 1 -or $enriched[0].content -ne 'Original' -or
+    $enriched[0].extra -ne 'New' -or $enriched[0].senderUserId -ne 12) {
+    throw 'Duplicate message IDs must preserve richer fields from either page'
+}
+$emptyPreviewFallback = Get-PreviewMessage ([pscustomobject]@{
+    preview_message=[pscustomobject]@{};
+    previewMessage=[pscustomobject]@{ id='available'; content='preserved' }
+})
+if ($emptyPreviewFallback.id -ne 'available') {
+    throw 'An empty preview object must not conceal a usable alternate preview'
+}
+$previewForKnown = Get-PreviewMessage ([pscustomobject]@{
+    preview_message=$null; previewMessage=[pscustomobject]@{ content='Accessible preview' }
+})
+if ($previewForKnown.content -ne 'Accessible preview') {
+    throw 'The preview fallback must handle nullable primary fields'
+}
+$previewSource = Get-Content -LiteralPath $scriptPath -Raw
+if ($previewSource -notmatch "metadata-only-error','metadata-only-empty-response" -or
+    $previewSource -notmatch "archiveStatus = 'preview-only'") {
+    throw 'Known-ID chats must preserve available message previews on empty or failed fetches'
+}
+$previewCountSource = Get-Content -LiteralPath $scriptPath -Raw
+if ($previewCountSource -notmatch 'previewOnlyConversations') {
+    throw 'PowerShell export must report preview-only conversations separately'
+}
 $script:Responses = @([pscustomobject]@{ conversations=@([pscustomobject]@{ id='saved-chat' }); nextCursor='next' }, [pscustomobject]@{ error='bad page' })
 $script:ResponseIndex = 0
 $partialList = $false

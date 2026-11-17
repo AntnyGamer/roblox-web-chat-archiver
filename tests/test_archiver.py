@@ -1,10 +1,13 @@
 """Network-free regression tests for the Roblox archive format and paging logic."""
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -56,6 +59,65 @@ class ArchiverTests(unittest.TestCase):
             with patch.object(app.time, "sleep") as sleep:
                 self.assertEqual(app.request_json("https://apis.roblox.com/test"), {"ok": True})
         sleep.assert_called_once_with(120.0)
+
+    def test_concurrent_downloads_share_one_rate_limit(self):
+        starts = []
+        active = 0
+        peak = 0
+        guard = threading.Lock()
+
+        class FakeOpener:
+            def open(self, request, timeout=None):
+                nonlocal active, peak
+                with guard:
+                    starts.append(time.monotonic())
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.09)
+                with guard:
+                    active -= 1
+                return object()
+
+        with patch.object(app, "_opener", FakeOpener()), \
+             patch.object(app, "_last_request_at", 0.0), \
+             patch.object(app, "MIN_REQUEST_INTERVAL", 0.025):
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                results = list(pool.map(lambda _: app._open(None), range(3)))
+        self.assertEqual(len(results), 3)
+        self.assertEqual(len(starts), 3)
+        self.assertGreaterEqual(peak, 2, "Independent requests should overlap their network wait")
+        self.assertTrue(all(b - a >= 0.018 for a, b in zip(starts, starts[1:])),
+                        "Parallel requests must not bypass the global rate limiter")
+
+    def test_concurrent_conversation_fetch_retains_all_messages(self):
+        gate = threading.Event()
+        lock = threading.Lock()
+        running = set()
+
+        def fetch(cid):
+            with lock:
+                running.add(cid)
+                if len(running) >= 2:
+                    gate.set()
+            if not gate.wait(4):
+                raise AssertionError("Conversation fetches never overlapped")
+            return [{"id": cid + "-1", "senderUserId": 21, "content": cid}]
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={
+                "one": {"id": "one"}, "two": {"id": "two"}}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", side_effect=fetch))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        self.assertEqual(set(running), {"one", "two"})
+        self.assertEqual(writer.call_args.args[3]["one"]["messages"][0]["content"], "one")
+        self.assertEqual(writer.call_args.args[3]["two"]["messages"][0]["content"], "two")
 
     def test_public_requests_reuse_an_uncredentialed_opener(self):
         with patch.object(app, "_public_opener") as opener:
@@ -113,6 +175,143 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         self.assertTrue(all(call.args[1]["include_user_data"] == "true" for call in request.call_args_list))
 
+    def test_verified_inventory_retains_friends_from_one_pass_and_all_channels(self):
+        pages = [
+            {"conversations": [
+                {"id": None, "source": "friends", "type": "one_to_one",
+                 "participant_user_ids": [21, 99], "name": "Friend",
+                 "user_data": {"99": {"display_name": "Old friend"}}},
+                {"id": "a", "source": "channels", "name": "First"}],
+             "nextCursor": "next"},
+            {"conversations": [{"id": "b", "source": "channels"}]},
+            {"conversations": [{"id": "a", "source": "channels", "name": "First revised"}],
+             "nextCursor": "next"},
+            {"conversations": [
+                {"id": None, "source": "friends", "type": "one_to_one",
+                 "participant_user_ids": [99, 21], "name": "Friend"},
+                {"id": "c", "source": "channels"}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages) as request:
+            with contextlib.redirect_stdout(io.StringIO()):
+                conversations = app.fetch_all_conversations(verify=True)
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(len(conversations), 4)
+        self.assertEqual(conversations["a"]["name"], "First revised")
+        self.assertEqual(conversations["__missing-id-p1-i1"]["user_data"]["99"]["display_name"], "Old friend")
+
+    def test_verified_inventory_recovers_after_one_pass_fails(self):
+        pages = [
+            {"conversations": [{"id": "first"}], "nextCursor": "next"},
+            {"unexpected": True},
+            {"conversations": [{"id": "second"}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(app.PartialConversationsError) as caught:
+                    app.fetch_all_conversations(verify=True)
+        self.assertEqual(set(caught.exception.conversations), {"first", "second"})
+
+    def test_different_embedded_messages_survive_inventory_overlap(self):
+        old = {"chat": {"id": "chat", "messages": [
+            {"id": "first", "content": "old content", "meta": {"sender": "Alice"}},
+            {"id": "second", "content": "second"},
+        ]}}
+        new = {"chat": {"id": "chat", "messages": [
+            {"id": "first", "content": None, "meta": {"sent": "2026"}},
+            {"id": "third", "content": "third"},
+        ]}}
+        result = app._merge_conversation_snapshots([old, new])["chat"]["messages"]
+        self.assertEqual([message["id"] for message in result],
+                         ["first", "second", "third"])
+        self.assertEqual(result[0]["content"], "old content")
+        self.assertEqual(result[0]["meta"], {"sender": "Alice", "sent": "2026"})
+
+    def test_embedded_idless_message_multiplicity_is_preserved(self):
+        old = {"chat": {"id": "chat", "messages": [{"content": "same"}]}}
+        new = {"chat": {"id": "chat", "messages": [{"content": "same"}, {"content": "same"}]}}
+        merged = app._merge_conversation_snapshots([old, new])["chat"]["messages"]
+        self.assertEqual(len(merged), 2, "The second identical ID-less message must not disappear")
+
+    def test_idless_embedded_messages_require_exact_match_to_deduplicate(self):
+        old = {"c": {"id": "c", "messages": [
+            {"content": "same"}, {"content": "same"}
+        ]}}
+        new = {"c": {"id": "c", "messages": [
+            {"content": "same"}, {"content": "different"}
+        ]}}
+        result = app._merge_conversation_snapshots([old, new])["c"]["messages"]
+        self.assertEqual(result, [{"content": "same"}, {"content": "same"},
+                                  {"content": "different"}])
+
+    def test_participant_sets_keep_members_from_both_pages(self):
+        pages = [
+            {"conversations": [{"id": "chat", "participant_user_ids": [12, 21]}],
+             "nextCursor": "next"},
+            {"conversations": [{"id": "chat", "participant_user_ids": [21, 99]}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages):
+            with contextlib.redirect_stdout(io.StringIO()):
+                found = app.fetch_all_conversations()
+        self.assertEqual(found["chat"]["participant_user_ids"], [12, 21, 99])
+
+    def test_idless_groups_with_equal_members_are_not_combined(self):
+        shared = {"source": "friends", "type": "group", "participant_user_ids": [12, 21]}
+        snapshots = [
+            {"__missing-id-p1-i1": {**shared, "created_at": "2025-01-01"}},
+            {"__missing-id-p1-i1": {**shared, "created_at": "2026-01-01"}},
+        ]
+        result = app._merge_conversation_snapshots(snapshots)
+        self.assertEqual(len(result), 2)
+
+    def test_repeated_conversation_keeps_nested_user_metadata(self):
+        pages = [
+            {"conversations": [{"id": "chat", "user_data": {"99": {
+                "display_name": "Best friend", "is_verified": True}},
+                "preview_message": {"content": "Previous preview", "sent": "old"}}],
+             "nextCursor": "page-2"},
+            {"conversations": [{"id": "chat", "user_data": {"99": {
+                "display_name": None, "combined_name": "Friend"}},
+                "preview_message": {"content": None, "sent": "new"}}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages):
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = app.fetch_all_conversations()
+        self.assertEqual(len(result), 1)
+        profile = result["chat"]["user_data"]["99"]
+        self.assertEqual(profile["display_name"], "Best friend")
+        self.assertTrue(profile["is_verified"])
+        self.assertEqual(profile["combined_name"], "Friend")
+        self.assertEqual(result["chat"]["preview_message"]["content"], "Previous preview")
+        self.assertEqual(result["chat"]["preview_message"]["sent"], "old")
+
+    def test_different_preview_ids_never_mix_text_and_time(self):
+        old = {"chat": {"id": "chat", "preview_message": {
+            "id": "old", "content": "old text", "sent": "2020"}}}
+        new = {"chat": {"id": "chat", "preview_message": {
+            "id": "new", "content": "new text", "sent": "2026"}}}
+        result = app._merge_conversation_snapshots([old, new])["chat"]["preview_message"]
+        self.assertEqual(result, {"id": "new", "content": "new text", "sent": "2026"})
+
+        newest_blank = {"chat": {"id": "chat", "preview_message": {
+            "id": "new", "content": None, "sent": "2026"}}}
+        result = app._merge_conversation_snapshots([old, newest_blank])["chat"]["preview_message"]
+        self.assertEqual(result, {"id": "old", "content": "old text", "sent": "2020"})
+
+    def test_repeated_messages_keep_enriched_details(self):
+        pages = [
+            {"messages": [{"id": "message", "senderUserId": 12,
+                           "content": "Original", "sent": "2026-10-01"}],
+             "nextCursor": "next"},
+            {"messages": [{"id": "message", "senderUserId": None,
+                           "content": None, "extra": "new details"}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages):
+            result = app.fetch_all_messages("chat")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["content"], "Original")
+        self.assertEqual(result[0]["extra"], "new details")
+        self.assertEqual(result[0]["senderUserId"], 12)
+
     def test_repeated_conversation_cursor_fails_closed(self):
         pages = [{"conversations": [], "nextCursor": "same"},
                  {"conversations": [], "nextCursor": "same"}]
@@ -147,6 +346,14 @@ class ArchiverTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(set(app.fetch_all_conversations()), {"chat"})
 
+    def test_overlapping_message_pages_do_not_duplicate_ids(self):
+        pages = [
+            {"messages": [{"id": "first", "content": "A"}], "nextCursor": "next"},
+            {"messages": [{"id": "first", "content": "A"}, {"id": "second", "content": "B"}]},
+        ]
+        with patch.object(app, "request_json", side_effect=pages):
+            self.assertEqual([m["id"] for m in app.fetch_all_messages("chat")], ["first", "second"])
+
     def test_invalid_later_page_retains_earlier_messages(self):
         pages = [{"messages": [{"content": "saved"}], "nextCursor": "page-2"},
                  {"message": "temporary failure"}]
@@ -158,6 +365,34 @@ class ArchiverTests(unittest.TestCase):
             with self.assertRaises(app.ArchiverError) as first:
                 app.fetch_all_messages("chat")
         self.assertNotIsInstance(first.exception, app.PartialMessagesError)
+
+    def test_embedded_profiles_skip_redundant_lookup_and_allow_incomplete_fallback(self):
+        convo = {"id": "chat", "participantUserIds": [21, 99, 100],
+                 "user_data": {
+                     "99": {"id": 99, "name": "Known", "display_name": "Friend", "is_verified": True},
+                     "100": {"id": 100, "name": "Incomplete", "display_name": ""},
+                 }}
+        embedded = app._embedded_people([convo])
+        self.assertEqual(list(embedded), ["99"])
+        self.assertEqual(embedded["99"]["displayName"], "Friend")
+        self.assertTrue(embedded["99"]["hasVerifiedBadge"])
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value={"chat": convo}))
+            stack.enter_context(patch.object(app, "fetch_all_messages", return_value=[
+                {"id": "msg", "senderUserId": 99, "content": "Hello"}]))
+            lookup = stack.enter_context(patch.object(app, "resolve_users_batch", return_value={
+                "100": {"name": "Resolved", "displayName": "Resolved", "targetId": 100}}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        self.assertEqual(set(lookup.call_args.args[0]), {100})
+        self.assertEqual(writer.call_args.args[2]["99"]["name"], "Known")
+        self.assertEqual(writer.call_args.args[2]["100"]["name"], "Resolved")
 
     def test_nested_batch_users_avoid_redundant_individual_calls(self):
         with patch.object(app, "request_public_json", return_value={
@@ -224,9 +459,9 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(normalized["title"], "My chat")
         self.assertEqual(normalized["messages"][0]["senderTargetId"], 10)
         self.assertEqual(normalized["messages"][0]["sent"], "2026-01-01")
-        self.assertNotIn("createdAt", normalized["messages"][0])
+        self.assertEqual(normalized["messages"][0]["createdAt"], "2026-01-01")
         self.assertEqual(normalized["_archiveStatus"], "failed")
-        self.assertNotIn("name", normalized)
+        self.assertEqual(normalized["name"], "My chat")
         with tempfile.TemporaryDirectory() as directory:
             result = app.write_archive(Path(directory), {"id": 7, "name": "Example"},
                 {}, {"first": normalized}, [{"conversationId": "first", "error": "transient error"}])
@@ -234,6 +469,7 @@ class ArchiverTests(unittest.TestCase):
             self.assertFalse(result.with_suffix(result.suffix + ".tmp").exists())
             self.assertEqual(archive["archiveMeta"]["failedConversations"][0]["error"], "transient error")
             self.assertEqual(archive["conversations"]["first"]["messages"][0]["content"], "hello")
+            self.assertEqual(archive["archiveMeta"]["previewOnlyConversations"], 0)
 
     def test_consecutive_archive_exports_preserve_both_private_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -323,6 +559,87 @@ class ArchiverTests(unittest.TestCase):
         self.assertEqual(saved["messages"][0]["content"], "saved message")
         self.assertEqual(writer.call_args.args[4][0]["conversationId"], "chat")
 
+    def test_preview_ignores_empty_primary_payload_and_uses_available_alias(self):
+        result = app._preview_message({"preview_message": {}, "previewMessage": {
+            "id": "available", "content": "preserved"}})
+        self.assertEqual(result["id"], "available")
+        self.assertIsNone(app._preview_message({"preview_message": {}}))
+
+    def test_main_preserves_preview_if_message_history_is_empty_or_unavailable(self):
+        raw = {
+            "empty": {"id": "empty", "preview_message": {"id": "preview-a", "content": "A"}},
+            "failed": {"id": "failed", "previewMessage": {"id": "preview-b", "content": "B"}},
+        }
+
+        def fetch(cid):
+            if cid == "failed":
+                raise app.ArchiverError("Roblox returned an error")
+            return []
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value=raw))
+            stack.enter_context(patch.object(app, "fetch_all_messages", side_effect=fetch))
+            stack.enter_context(patch.object(app, "resolve_users_batch", return_value={}))
+            writer = stack.enter_context(patch.object(app, "write_archive", return_value=Path("archive.json")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.main(), 0)
+        conversations = writer.call_args.args[3]
+        self.assertEqual(conversations["empty"]["_archiveStatus"], "preview-only")
+        self.assertEqual(conversations["empty"]["messages"][0]["content"], "A")
+        self.assertEqual(conversations["failed"]["_archiveStatus"], "preview-only")
+        self.assertEqual(conversations["failed"]["messages"][0]["content"], "B")
+        self.assertEqual(conversations["failed"]["_archiveError"], "Roblox returned an error")
+        with tempfile.TemporaryDirectory() as folder:
+            archive_path = app.write_archive(Path(folder), {"id": 21, "name": "Me"},
+                                             {}, conversations, [])
+            record = json.loads(archive_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["archiveMeta"]["previewOnlyConversations"], 2)
+        self.assertEqual(writer.call_args.args[4][0]["conversationId"], "failed")
+
+    def test_interrupted_export_cancels_pending_requests(self):
+        raw = {f"chat-{index}": {"id": f"chat-{index}"} for index in range(12)}
+
+        def stop_early(cid):
+            if cid == "chat-0":
+                raise KeyboardInterrupt()
+            app._archive_abort.wait(2)
+            if app._archive_abort.is_set():
+                raise app.AuthenticationError("Cancelled")
+            return []
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(app.os.environ, {"ROBLOSECURITY": "fake"}))
+            stack.enter_context(patch.object(app, "_init_session"))
+            stack.enter_context(patch.object(app, "refresh_session"))
+            stack.enter_context(patch.object(app, "request_json", return_value={"id": 21, "name": "Me"}))
+            stack.enter_context(patch.object(app, "fetch_all_conversations", return_value=raw))
+            stack.enter_context(patch.object(app, "fetch_all_messages", side_effect=stop_early))
+            writer = stack.enter_context(patch.object(app, "write_archive"))
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(KeyboardInterrupt):
+                    app.main()
+        self.assertTrue(app._archive_abort.is_set(), "Interrupts must stop queued downloads")
+        writer.assert_not_called()
+        app._archive_abort.clear()
+
+    def test_authentication_failure_cancels_queued_message_fetches(self):
+        app._archive_abort.clear()
+        try:
+            with patch.object(app, "fetch_all_messages", side_effect=app.AuthenticationError("expired")):
+                with self.assertRaises(app.AuthenticationError):
+                    app._fetch_archive_messages("expired")
+            self.assertTrue(app._archive_abort.is_set())
+            with patch.object(app, "request_json") as request:
+                with self.assertRaisesRegex(app.AuthenticationError, "cancelling"):
+                    app.fetch_all_messages("queued")
+                request.assert_not_called()
+        finally:
+            app._archive_abort.clear()
+
     def test_authenticated_user_is_not_fetched_again(self):
         conversation = {"id": "chat", "participantUserIds": [21, 99]}
         messages = [{"senderUserId": 21, "text": "hello"}]
@@ -360,6 +677,31 @@ class ArchiverTests(unittest.TestCase):
                     app.refresh_session()
         finally:
             app._csrf_token = old_token
+
+    def test_concurrent_unauthorized_requests_refresh_session_only_once(self):
+        barrier = threading.Barrier(2)
+        attempts = {}
+        lock = threading.Lock()
+
+        def request(req):
+            url = req.full_url
+            with lock:
+                count = attempts.get(url, 0) + 1
+                attempts[url] = count
+            if count == 1:
+                barrier.wait(timeout=4)
+                raise HTTPError(url, 401, "Unauthorized", {}, io.BytesIO(b'{}'))
+            return io.BytesIO(b'{"ok":true}')
+
+        with patch.object(app, "_open", side_effect=request), \
+             patch.object(app, "_session_epoch", 0), \
+             patch.object(app, "refresh_session") as refresh:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(app.request_json, [
+                    "https://apis.roblox.com/test-a", "https://apis.roblox.com/test-b"]))
+        self.assertEqual(results, [{"ok": True}, {"ok": True}])
+        self.assertEqual(refresh.call_count, 1,
+                         "Workers should reuse one successful session refresh")
 
     def test_authenticated_request_refreshes_once_on_401(self):
         denied = HTTPError("https://apis.roblox.com/test", 401, "Unauthorized", {}, io.BytesIO(b"{}"))

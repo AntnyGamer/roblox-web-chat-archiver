@@ -93,6 +93,34 @@ assert.equal(vm.runInContext('archive.conversations.third.title',context),'New a
 context.openConversation('third',root.children[0]);
 assert.match(document.getElementById('messages').children[0].textContent,/omitted this conversation's ID/,'missing-ID conversations need a warning');
 assert.match(document.getElementById('messages').children[1].textContent,/preview/,'missing-ID previews must remain readable');
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{
+ older:{title:'Old friend',updated_at:'2025-01-01',messages:[]},
+ newer:{title:'Recent friend',updated_at:'2026-01-01',messages:[]}
+}})});
+assert.equal(root.children[0].dataset.id,'newer',
+  'metadata-only conversations should sort by latest recorded activity');
+assert.equal(root.children[1].dataset.id,'older',
+  'older metadata-only conversations must not be treated as equally undated');
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{
+ preview:{id:'preview',title:'Recoverable',_archiveStatus:'preview-only',
+         messages:[{content:'Saved preview',sent:'2026-01-01'}]}
+},archiveMeta:{previewOnlyConversations:1}})});
+assert.match(document.getElementById('stats').textContent,/1 preview-only/,
+  'preview-only messages should not be mistaken for complete history');
+context.openConversation('preview',root.children[0]);
+assert.match(document.getElementById('messages').children[0].textContent,/Preview only/,
+  'viewer must warn that an accessible preview is not the full conversation');
+assert.match(document.getElementById('messages').children[1].textContent,/Saved preview/,
+  'viewer must display the accessible preview');
+context.loadArchive({text:JSON.stringify({userId:1,people:{'1':{name:'Me'}},conversations:{
+ noHistory:{id:'noHistory',title:'Empty response',_archiveStatus:'metadata-only-empty-response',
+            messages:[]}
+}})});
+context.openConversation('noHistory',root.children[0]);
+assert.match(document.getElementById('messages').children[0].textContent,/no accessible messages/,
+  'an empty history API response must show a completeness warning');
+assert.match(document.getElementById('messages').children[1].textContent,/No messages/,
+  'the viewer should still show an empty state when there is no available history');
 const dated={sent:'2026-01-01T00:00:00Z'};
 const stamp=context.messageTime(dated);
 assert.equal(stamp,Date.parse(dated.sent),'message timestamps must retain their ordering');

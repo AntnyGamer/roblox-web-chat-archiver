@@ -8,6 +8,7 @@ Roblox API hosts used by this program and is never written to the archive.
 from __future__ import annotations
 
 import datetime as _dt
+from concurrent.futures import ThreadPoolExecutor
 import getpass
 from http.cookiejar import Cookie, CookieJar
 import json
@@ -15,6 +16,8 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import sys
+import threading
 import time
 import traceback
 from typing import Any, Iterable
@@ -29,8 +32,13 @@ USERS_BASE = "https://users.roblox.com/v1"
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 6
 MIN_REQUEST_INTERVAL = 0.52
+MAX_CHAT_WORKERS = 3
 
 _last_request_at = 0.0
+_pacing_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+_archive_abort = threading.Event()
+_session_epoch = 0
 _opener = None
 _public_opener = build_opener()
 _csrf_token: str | None = None
@@ -103,7 +111,7 @@ def _sleep_for_rate_limit() -> None:
 
 
 def _init_session(cookie: str) -> None:
-    global _opener
+    global _opener, _session_epoch
     jar = CookieJar()
     jar.set_cookie(Cookie(
         version=0,
@@ -125,14 +133,17 @@ def _init_session(cookie: str) -> None:
         rfc2109=False,
     ))
     _opener = build_opener(HTTPCookieProcessor(jar))
+    _session_epoch = 0
 
 
 def _open(req: Request):
     global _last_request_at
     if _opener is None:
         raise ArchiverError("Roblox session was not initialized.")
-    _sleep_for_rate_limit()
-    _last_request_at = time.monotonic()
+    # One global throttle even when several conversations are downloading at once.
+    with _pacing_lock:
+        _sleep_for_rate_limit()
+        _last_request_at = time.monotonic()
     return _opener.open(req, timeout=REQUEST_TIMEOUT)
 
 
@@ -187,6 +198,7 @@ def refresh_session() -> None:
 
 def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET JSON through the authenticated cookie session."""
+    global _session_epoch
     if params:
         query = urlencode({k: v for k, v in params.items() if v is not None and v != ""})
         if query:
@@ -204,6 +216,8 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
     last_error: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
+        # Capture the session generation so concurrent 401s share one refresh.
+        session_epoch = _session_epoch
         try:
             with _open(Request(url, headers=headers, method="GET")) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
@@ -226,11 +240,17 @@ def request_json(url: str, params: dict[str, Any] | None = None) -> Any:
 
             if exc.code == 401:
                 if attempt == 1:
-                    try:
-                        refresh_session()
-                        continue
-                    except AuthenticationError:
-                        pass
+                    with _refresh_lock:
+                        if _session_epoch != session_epoch:
+                            # Another worker already refreshed the shared cookie jar.
+                            continue
+                        try:
+                            refresh_session()
+                        except AuthenticationError:
+                            pass
+                        else:
+                            _session_epoch += 1
+                            continue
                 raise AuthenticationError(
                     "Roblox rejected the login session (HTTP 401). The browser cookie may have "
                     "rotated since it was copied. Copy the CURRENT .ROBLOSECURITY value and retry."
@@ -334,6 +354,14 @@ def _conversation_id(convo: dict[str, Any]) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
+def _preview_message(convo: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("preview_message", "previewMessage"):
+        candidate = convo.get(key)
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return None
+
+
 def _message_sender_id(message: dict[str, Any]) -> int | None:
     value = message.get("sender_user_id") or message.get("senderUserId") or message.get("senderTargetId")
     if value is None and isinstance(message.get("sender"), dict):
@@ -395,7 +423,125 @@ def _created_by(convo: dict[str, Any]) -> int | None:
         return None
 
 
-def fetch_all_conversations() -> dict[str, dict[str, Any]]:
+def _merge_nonempty_metadata(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Keep information from either response; latest nonempty values take priority."""
+    merged = dict(previous)
+    for field, value in current.items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        old_value = merged.get(field)
+        if field in ("preview_message", "previewMessage") and isinstance(old_value, dict) and isinstance(value, dict):
+            # Previews are distinct messages, not arbitrary nested metadata:
+            # never splice the text of one into the timestamp of another.
+            old_id = old_value.get("id") or old_value.get("messageId") or old_value.get("message_id")
+            new_id = value.get("id") or value.get("messageId") or value.get("message_id")
+            if old_id and new_id and str(old_id) == str(new_id):
+                merged[field] = _merge_nonempty_metadata(old_value, value)
+            elif (value.get("content") or value.get("text") or value.get("message")):
+                merged[field] = value
+            elif not (old_value.get("content") or old_value.get("text") or old_value.get("message")):
+                merged[field] = value
+            continue
+        if isinstance(old_value, dict) and isinstance(value, dict):
+            merged[field] = _merge_nonempty_metadata(old_value, value)
+        elif field == "messages" and isinstance(old_value, list) and isinstance(value, list):
+            # Two inventory passes can provide different embedded messages.
+            # Retain the union without confusing matching text from distinct IDs.
+            retained = list(old_value)
+            positions: dict[str, int] = {}
+            for index, message in enumerate(retained):
+                if isinstance(message, dict):
+                    mid = message.get("id") or message.get("messageId") or message.get("message_id")
+                    if mid not in (None, ""):
+                        positions[str(mid)] = index
+            without_ids: dict[str, int] = {}
+            for message in old_value:
+                if not isinstance(message, dict) or not (message.get("id") or message.get("messageId") or message.get("message_id")):
+                    signature = json.dumps(message, sort_keys=True, ensure_ascii=False)
+                    without_ids[signature] = without_ids.get(signature, 0) + 1
+            for message in value:
+                mid = (message.get("id") or message.get("messageId") or message.get("message_id")
+                       if isinstance(message, dict) else None)
+                if mid not in (None, "") and str(mid) in positions:
+                    index = positions[str(mid)]
+                    if isinstance(retained[index], dict):
+                        retained[index] = _merge_nonempty_metadata(retained[index], message)
+                elif mid in (None, ""):
+                    signature = json.dumps(message, sort_keys=True, ensure_ascii=False)
+                    if without_ids.get(signature, 0):
+                        without_ids[signature] -= 1
+                    else:
+                        retained.append(message)
+                else:
+                    positions[str(mid)] = len(retained)
+                    retained.append(message)
+            merged[field] = retained
+        elif field in ("participant_user_ids", "participantUserIds", "participants") and (
+            isinstance(old_value, list) and isinstance(value, list)
+        ):
+            # A later response may omit some members; retain each unique member.
+            merged[field] = list(old_value)
+            for member in value:
+                if member not in merged[field]:
+                    merged[field].append(member)
+        else:
+            merged[field] = value
+    return merged
+
+
+def _merge_conversation_snapshots(snapshots: list[dict[str, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """Union successive API inventories, including records without server IDs."""
+    result: dict[str, dict[str, Any]] = {}
+    identities: dict[tuple[Any, ...], str] = {}
+    collision = 0
+    for snapshot in snapshots:
+        for key, item in snapshot.items():
+            cid = _conversation_id(item)
+            if cid:
+                destination = cid
+            else:
+                # Pagination positions are not identities: ordering can change between passes.
+                participants = tuple(sorted(_participant_ids(item)))
+                if participants and item.get("source") == "friends" and item.get("type") == "one_to_one":
+                    identity = (item.get("source"), item.get("type"), participants)
+                else:
+                    identity = (item.get("source"), item.get("type"), item.get("created_at"),
+                                item.get("name") or item.get("title"), key)
+                destination = identities.get(identity)
+                if destination is None:
+                    destination = key
+                    while destination in result:
+                        collision += 1
+                        destination = f"__missing-id-verified-{collision}"
+                    identities[identity] = destination
+            if destination not in result:
+                result[destination] = dict(item)
+                continue
+            result[destination] = _merge_nonempty_metadata(result[destination], item)
+    return result
+
+
+def fetch_all_conversations(verify: bool = False) -> dict[str, dict[str, Any]]:
+    if verify:
+        snapshots: list[dict[str, dict[str, Any]]] = []
+        errors: list[str] = []
+        for attempt in range(2):
+            try:
+                snapshots.append(fetch_all_conversations())
+            except AuthenticationError:
+                raise
+            except PartialConversationsError as exc:
+                snapshots.append(exc.conversations)
+                errors.append(f"Pass {attempt + 1}: {exc}")
+            except ArchiverError as exc:
+                errors.append(f"Pass {attempt + 1}: {exc}")
+        if not snapshots:
+            raise ArchiverError("; ".join(errors))
+        combined = _merge_conversation_snapshots(snapshots)
+        if errors:
+            raise PartialConversationsError("; ".join(errors), combined)
+        return combined
+
     conversations: dict[str, dict[str, Any]] = {}
     cursor: str | None = None
     seen_cursors: set[str] = set()
@@ -410,7 +556,8 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
                 raise ArchiverError("Malformed Roblox conversation page: items must be objects.")
             for index, item in enumerate(items, 1):
                 cid = _conversation_id(item) or f"__missing-id-p{page}-i{index}"
-                conversations[cid] = item
+                conversations[cid] = (_merge_nonempty_metadata(conversations[cid], item)
+                                      if cid in conversations else item)
             next_cursor = _next_cursor(data)
             if next_cursor in seen_cursors:
                 raise ArchiverError("Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.")
@@ -431,10 +578,13 @@ def fetch_all_conversations() -> dict[str, dict[str, Any]]:
 
 def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
+    seen_message_ids: dict[str, int] = {}
     cursor: str | None = None
     seen_cursors: set[str] = set()
 
     while True:
+        if _archive_abort.is_set():
+            raise AuthenticationError("Another conversation request failed authentication; cancelling remaining downloads.")
         try:
             data = request_json(
                 f"{CHAT_BASE}/get-conversation-messages",
@@ -449,7 +599,16 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
             if messages:
                 raise PartialMessagesError(str(exc), messages) from exc
             raise
-        messages.extend(items)
+        for item in items:
+            mid = item.get("id") or item.get("messageId") or item.get("message_id")
+            if mid not in (None, ""):
+                marker = str(mid)
+                if marker in seen_message_ids:
+                    index = seen_message_ids[marker]
+                    messages[index] = _merge_nonempty_metadata(messages[index], item)
+                    continue
+                seen_message_ids[marker] = len(messages)
+            messages.append(item)
 
         next_cursor = _next_cursor(data)
         if not next_cursor:
@@ -463,6 +622,40 @@ def fetch_all_messages(conversation_id: str) -> list[dict[str, Any]]:
         cursor = next_cursor
 
     return messages
+
+
+def _fetch_archive_messages(conversation_id: str) -> list[dict[str, Any]]:
+    try:
+        return fetch_all_messages(conversation_id)
+    except AuthenticationError:
+        _archive_abort.set()
+        raise
+
+
+def _embedded_people(conversations: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Reuse complete profiles already present in the authenticated conversation payload."""
+    people: dict[str, dict[str, Any]] = {}
+    for convo in conversations:
+        embedded = convo.get("user_data") or convo.get("userData")
+        if not isinstance(embedded, dict):
+            continue
+        for key, entry in embedded.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                uid = int(entry.get("id") or entry.get("userId") or key)
+            except (TypeError, ValueError):
+                continue
+            name = entry.get("name")
+            display = entry.get("display_name") or entry.get("displayName")
+            if uid <= 0 or not isinstance(name, str) or not name.strip() or not isinstance(display, str) or not display.strip():
+                continue
+            people[str(uid)] = {
+                "name": name, "displayName": display,
+                "hasVerifiedBadge": bool(entry.get("is_verified", entry.get("hasVerifiedBadge", False))),
+                "targetId": uid,
+            }
+    return people
 
 
 def resolve_users_batch(user_ids: Iterable[int]) -> dict[str, dict[str, Any]]:
@@ -535,15 +728,12 @@ def normalize_conversation(
         normalized["senderTargetId"] = sender_id
         normalized["sent"] = _message_time(raw_message)
         normalized["content"] = _message_content(raw_message)
-        for key in ("sender_user_id", "senderUserId", "created_at", "createdAt"):
-            normalized.pop(key, None)
         normalized_messages.append(normalized)
 
     normalized_convo = dict(raw)
-    normalized_convo["id"] = raw.get("id", cid)
+    normalized_convo["id"] = raw.get("id") or cid
     normalized_convo["title"] = str(title)
     normalized_convo["messages"] = normalized_messages
-    normalized_convo.pop("name", None)
     if archive_status:
         normalized_convo["_archiveStatus"] = archive_status
     if archive_error:
@@ -573,6 +763,7 @@ def write_archive(
             "archiver": APP_NAME,
             "conversationCount": len(conversations),
             "metadataOnlyConversations": metadata_only,
+            "previewOnlyConversations": sum(c.get("_archiveStatus") == "preview-only" for c in conversations.values()),
             "failedConversations": failures,
             "missingIdConversations": sum(1 for c in conversations.values() if c.get("_archiveStatus") == "missing-id"),
         },
@@ -630,7 +821,7 @@ def main() -> int:
     print("\nFetching conversations...", flush=True)
     conversation_list_error = None
     try:
-        raw_conversations = fetch_all_conversations()
+        raw_conversations = fetch_all_conversations(verify=True)
     except PartialConversationsError as exc:
         raw_conversations = exc.conversations
         conversation_list_error = str(exc)
@@ -643,61 +834,89 @@ def main() -> int:
     failures: list[dict[str, str]] = []
 
     total = len(raw_conversations)
-    for index, (cid, raw_convo) in enumerate(raw_conversations.items(), start=1):
-        title = raw_convo.get("name") or raw_convo.get("title") or cid
-        print(f"[{index}/{total}] Fetching {title!s}...", end=" ", flush=True)
+    _archive_abort.clear()
+    # Fetch independent conversations concurrently while spacing every authenticated
+    # request at the same global rate as sequential mode.
+    pool = ThreadPoolExecutor(max_workers=MAX_CHAT_WORKERS)
+    message_futures = {}
+    try:
+        message_futures = {
+            cid: pool.submit(_fetch_archive_messages, cid)
+            for cid, convo in raw_conversations.items() if _conversation_id(convo)
+        }
+        for index, (cid, raw_convo) in enumerate(raw_conversations.items(), start=1):
+            title = raw_convo.get("name") or raw_convo.get("title") or cid
+            print(f"[{index}/{total}] Fetching {title!s}...", end=" ", flush=True)
 
-        creator = _created_by(raw_convo)
-        if creator:
-            unknown_ids.add(creator)
-        unknown_ids.update(_participant_ids(raw_convo))
+            creator = _created_by(raw_convo)
+            if creator:
+                unknown_ids.add(creator)
+            unknown_ids.update(_participant_ids(raw_convo))
 
-        error = None
-        missing_id = _conversation_id(raw_convo) is None
-        if missing_id:
-            error = "Roblox returned this conversation without an ID; full message history cannot be requested."
-            embedded = raw_convo.get("messages")
-            messages = embedded if isinstance(embedded, list) and all(isinstance(m, dict) for m in embedded) else []
-            if not messages:
-                preview = raw_convo.get("preview_message") or raw_convo.get("previewMessage")
-                if isinstance(preview, dict):
-                    messages = [preview]
-            failures.append({"conversationId": cid, "title": str(title), "error": error})
-            status = "missing-id"
-        else:
-            try:
-                messages = fetch_all_messages(cid)
-            except AuthenticationError:
-                raise
-            except ArchiverError as exc:
-                error = str(exc)
+            error = None
+            missing_id = _conversation_id(raw_convo) is None
+            if missing_id:
+                error = "Roblox returned this conversation without an ID; full message history cannot be requested."
+                embedded = raw_convo.get("messages")
+                messages = embedded if isinstance(embedded, list) and all(isinstance(m, dict) for m in embedded) else []
+                if not messages:
+                    preview = _preview_message(raw_convo)
+                    if preview is not None:
+                        messages = [preview]
                 failures.append({"conversationId": cid, "title": str(title), "error": error})
-                messages = exc.messages if isinstance(exc, PartialMessagesError) else []
-            status = ("partial-error" if messages else "metadata-only-error") if error else (
-                "metadata-only-empty-response" if not messages else None
-            )
-        normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status, archive_error=error)
-        normalized_conversations[cid] = normalized
+                status = "missing-id"
+            else:
+                try:
+                    messages = message_futures[cid].result()
+                except AuthenticationError:
+                    _archive_abort.set()
+                    for future in message_futures.values():
+                        future.cancel()
+                    raise
+                except ArchiverError as exc:
+                    error = str(exc)
+                    failures.append({"conversationId": cid, "title": str(title), "error": error})
+                    messages = exc.messages if isinstance(exc, PartialMessagesError) else []
+                status = ("partial-error" if messages else "metadata-only-error") if error else (
+                    "metadata-only-empty-response" if not messages else None
+                )
+                if not messages:
+                    preview = _preview_message(raw_convo)
+                    if preview is not None:
+                        messages = [preview]
+                        status = "preview-only"
+            normalized = normalize_conversation(raw_convo, cid, messages, archive_status=status, archive_error=error)
+            normalized_conversations[cid] = normalized
 
-        for message in normalized["messages"]:
-            try:
-                sender_id = int(message.get("senderTargetId", 0))
-            except (TypeError, ValueError):
-                sender_id = 0
-            if sender_id:
-                unknown_ids.add(sender_id)
+            for message in normalized["messages"]:
+                try:
+                    sender_id = int(message.get("senderTargetId", 0))
+                except (TypeError, ValueError):
+                    sender_id = 0
+                if sender_id:
+                    unknown_ids.add(sender_id)
 
-        if error:
-            print(f"FAILED; {len(messages)} messages saved ({error})")
-        elif messages:
-            print(f"{len(messages)} messages")
-        else:
-            print("0 messages; metadata saved")
+            if error:
+                print(f"FAILED; {len(messages)} messages saved ({error})")
+            elif messages:
+                print(f"{len(messages)} messages")
+            else:
+                print("0 messages; metadata saved")
 
-    # Authenticated user details are already known; don't re-fetch them.
+    finally:
+        if sys.exc_info()[0] is not None:
+            _archive_abort.set()
+            for future in message_futures.values():
+                future.cancel()
+        pool.shutdown(wait=True)
+
+    # Conversation metadata already includes many complete user profiles.
     unknown_ids.discard(current_id)
-    print(f"\nResolving {len(unknown_ids)} users in batches...", flush=True)
-    people = resolve_users_batch(unknown_ids)
+    people = _embedded_people(raw_conversations.values())
+    remaining_ids = unknown_ids.difference(map(int, people))
+    print(f"\nResolving {len(remaining_ids)} missing user profiles in batches "
+          f"({len(unknown_ids) - len(remaining_ids)} reused)...", flush=True)
+    people.update(resolve_users_batch(remaining_ids))
 
     people[str(current_id)] = {
         "hasVerifiedBadge": bool(current_user.get("hasVerifiedBadge", False)),

@@ -10,6 +10,12 @@ Double-click **`run_archiver.bat`**. On Windows 10/11 it uses the included Power
 
 Then open **`viewer.html`**, click **Load archive**, and choose the generated JSON file.
 
+### Faster downloads (optional)
+
+If Python 3 is installed, open a Command Prompt in the archiver folder and run **`run_archiver.bat fast`** (or `py -3 app.py`). This uses the Python implementation, which downloads up to three independent conversations concurrently while **keeping the existing 520 ms minimum spacing between authenticated requests**. It can reduce elapsed time when Roblox replies slowly, without increasing the request rate. Actual speed depends on server latency and rate limits; it cannot bypass Roblox's 30-message pages.
+
+The normal double-click path still uses Windows PowerShell without extra software. Both implementations now reuse complete user profiles already present in conversation metadata, avoiding redundant profile API calls.
+
 ## How to get your `.ROBLOSECURITY` value
 
 Use your browser's built-in Developer Tools rather than a cookie extension.
@@ -35,13 +41,19 @@ For Chrome or Microsoft Edge:
 - Retries rate limits, temporary Roblox server errors, timeouts, and ordinary network failures instead of immediately crashing;
 - Paces authenticated requests to reduce the chance of hitting Roblox's cookie-API rate limits;
 - Requests 30 items per page on conversation and message endpoints to reduce API calls and includes user data in conversation-list requests;
+- Cancels queued Python downloads if authentication expires or the archiver is interrupted;
 - Validates the logged-in Roblox account before beginning a full archive;
 - Continues past deleted or unresolvable users and resolves user information in batches when possible;
 - **Preserves conversation metadata even when Roblox returns zero accessible messages or a conversation's message request fails**, rather than silently deleting that conversation from the archive;
 - Keeps previously downloaded messages if a later page fails, and marks the conversation incomplete in both the archive and viewer;
+- Preserves the available message preview when a known-ID conversation returns an empty page or its message-history request fails, and labels it as **preview-only** rather than implying that the full chat was retrieved;
+- Marks preview-only conversations separately in archive statistics;
 - Also preserves conversations discovered before a later conversation-list page fails, visibly marking the resulting archive incomplete;
 - Keeps conversation metadata and any embedded message previews when Roblox returns a conversation without an ID, flags its history as incomplete, and continues with other conversations;
 - Records metadata-only and failed conversation information in `archiveMeta` so archive completeness is easier to understand;
+- Queries the conversation list twice per export, combining the **current API responses within the same run** to retain ID-less friend metadata and valid-ID chat channels if Roblox returns an incomplete list on either pass; this is not a merge of previous JSON exports and adds some API requests;
+- Preserves the original Roblox conversation/message fields alongside normalized viewer fields, without discarding timestamp or sender aliases;
+- Removes duplicate message IDs when pages overlap, keeping distinct messages and all available system notifications;
 - Fixes PowerShell fallback when Roblox supplies null primary fields but valid alternate fields, preserving message text and sender IDs;
 - Gives each export a unique filename to prevent one backup from overwriting another; Python also writes private archives with restricted Unix file permissions;
 - Never writes the `.ROBLOSECURITY` value to the archive and redacts it from PowerShell diagnostics if it is still present during an early failure;
