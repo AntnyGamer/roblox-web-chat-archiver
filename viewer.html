@@ -106,9 +106,9 @@ function openConversation(id, el){
   const root=$("messages"); root.textContent="";
   const msgs=Array.isArray(convo.messages)?[...convo.messages]:[];
   msgs.sort((a,b)=>(messageTime(a)??0)-(messageTime(b)??0));
-  if(convo._archiveStatus==="partial-error"||convo._archiveStatus==="metadata-only-error"){
+  if(["partial-error","metadata-only-error","missing-id"].includes(convo._archiveStatus)){
     const warning=document.createElement("div");warning.className="archive-warning";
-    warning.textContent=convo._archiveStatus==="partial-error"?"Incomplete archive: later message pages could not be fetched.":"Incomplete archive: message retrieval failed.";
+    warning.textContent=convo._archiveStatus==="missing-id"?"Incomplete archive: Roblox omitted this conversation's ID, so full history could not be fetched.":convo._archiveStatus==="partial-error"?"Incomplete archive: later message pages could not be fetched.":"Incomplete archive: message retrieval failed.";
     root.append(warning);
   }
   if(!msgs.length){ const e=document.createElement("div");e.className="empty";e.textContent="No messages in this conversation.";root.append(e);return; }
@@ -149,7 +149,8 @@ function loadArchive(file){
       $("accountName").textContent=me ? (me.name || me.displayName || `User ${archive.userId}`) : `User ${archive.userId ?? "?"}`;
       const msgCount=conversationEntries.reduce((n,[,c])=>n+(Array.isArray(c.messages)?c.messages.length:0),0);
       $("stats").textContent=`${conversationEntries.length.toLocaleString()} conversations • ${msgCount.toLocaleString()} messages`+
-        (archive.archiveMeta?.conversationListIncomplete?" • ⚠ Incomplete conversation list":"");
+        (archive.archiveMeta?.conversationListIncomplete?" • ⚠ Incomplete conversation list":"")+
+        (archive.archiveMeta?.missingIdConversations?` • ⚠ ${archive.archiveMeta.missingIdConversations} missing IDs`:"");
       $("welcome").classList.add("hidden"); $("app").classList.remove("hidden"); $("sidebar").classList.remove("hide-mobile");
       $("chatTitle").textContent="Select a conversation"; $("messages").innerHTML='<div class="empty">Choose a conversation on the left.</div>';
       $("search").value=""; buildConversationList(); renderConversationList();

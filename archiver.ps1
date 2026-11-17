@@ -343,18 +343,21 @@ function Get-AllConversations {
 
     while ($true) {
         $page++
-        $query = @{ 'pageSize' = 30 }
+        $query = @{ 'pageSize' = 30; 'include_user_data' = 'true' }
         if ($cursor) { $query['cursor'] = $cursor }
         try {
             $data = Invoke-RobloxJson -Url "$ChatBase/get-user-conversations" -Query $query
             $items = @(Get-ItemArray $data @('conversations','Conversations','items') -Required)
             foreach ($item in $items) {
-                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array] -or
-                    -not (Get-ConversationId $item)) {
-                    throw 'Malformed Roblox conversation page: items require a valid ID.'
+                if ($null -eq $item -or $item -is [string] -or $item -is [ValueType] -or $item -is [array]) {
+                    throw 'Malformed Roblox conversation page: items must be objects.'
                 }
             }
-            foreach ($item in $items) { $result[(Get-ConversationId $item)] = $item }
+            for ($index = 0; $index -lt $items.Count; $index++) {
+                $cid = Get-ConversationId $items[$index]
+                if (-not $cid) { $cid = "__missing-id-p$page-i$($index + 1)" }
+                $result[$cid] = $items[$index]
+            }
             $next = Get-NextCursor $data
             if ($next -and $seen.ContainsKey($next)) {
                 throw 'Roblox returned the same conversation cursor twice; stopping to avoid an infinite loop.'
@@ -592,22 +595,33 @@ try {
         $messages = @()
         $archiveStatus = $null
         $archiveError = $null
-        try {
-            $messages = Get-AllMessages -ConversationId $cid
+        if (-not (Get-ConversationId $convo)) {
+            $archiveStatus = 'missing-id'
+            $archiveError = 'Roblox returned this conversation without an ID; full message history cannot be requested.'
+            $embedded = Get-PropertyValue $convo @('messages') @()
+            if ($embedded -is [array] -and @($embedded | Where-Object { $null -eq $_ -or $_ -is [string] -or $_ -is [ValueType] -or $_ -is [array] }).Count -eq 0) {
+                $messages = @($embedded)
+            }
+            [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$archiveError })
         }
-        catch {
-            $conversationError = $_.Exception.Message
-            if ($conversationError -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') {
-                throw
+        else {
+            try {
+                $messages = Get-AllMessages -ConversationId $cid
             }
-            $partial = $_.Exception.Data['PartialMessages']
-            if ($null -ne $partial -and @($partial).Count -gt 0) {
-                $messages = @($partial)
-                $archiveStatus = 'partial-error'
+            catch {
+                $conversationError = $_.Exception.Message
+                if ($conversationError -match '(?i)HTTP 401|HTTP 403|rejected the login session|refused the authenticated request') {
+                    throw
+                }
+                $partial = $_.Exception.Data['PartialMessages']
+                if ($null -ne $partial -and @($partial).Count -gt 0) {
+                    $messages = @($partial)
+                    $archiveStatus = 'partial-error'
+                }
+                else { $archiveStatus = 'metadata-only-error' }
+                $archiveError = $conversationError
+                [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$conversationError })
             }
-            else { $archiveStatus = 'metadata-only-error' }
-            $archiveError = $conversationError
-            [void]$failures.Add([ordered]@{ conversationId=$cid; title=$title; error=$conversationError })
         }
 
         if (-not $archiveStatus -and @($messages).Count -eq 0) {
@@ -678,6 +692,7 @@ try {
             conversationCount = $normalized.Count
             metadataOnlyConversations = $metadataOnly
             failedConversations = @($failures)
+            missingIdConversations = @($normalized.Values | Where-Object { $_['_archiveStatus'] -eq 'missing-id' }).Count
         }
     }
 
@@ -698,7 +713,7 @@ try {
     Write-Host ("Archived messages: {0}" -f $messageCount)
     if ($metadataOnly -gt 0) { Write-Host ("Metadata-only conversations: {0}" -f $metadataOnly) }
     if ($failures.Count -gt 0) {
-        Write-Host ("WARNING: {0} conversation(s) had message-fetch errors; their metadata was still saved." -f $failures.Count)
+        Write-Host ("WARNING: {0} conversation(s) have incomplete message history; their metadata was saved." -f $failures.Count)
     }
     if ($conversationListError) { Write-Host 'WARNING: Only conversations discovered before the list failure were archived.' -ForegroundColor Yellow }
 }
